@@ -3,7 +3,7 @@
  * Used by phone_deep_link and phone_batch deep_link action.
  */
 
-export interface AppDeepLinks {
+interface AppDeepLinks {
   readonly packageName: string;
   readonly links: Record<string, string>;
 }
@@ -271,15 +271,6 @@ export const DEEP_LINKS_DB: Record<string, AppDeepLinks> = {
 /**
  * Get all available deep links as a formatted string for the MCP tool description.
  */
-export function getDeepLinksHelp(): string {
-  const lines: string[] = [];
-  for (const [name, app] of Object.entries(DEEP_LINKS_DB)) {
-    for (const [action, uri] of Object.entries(app.links)) {
-      lines.push(`${name}:${action} → ${uri}`);
-    }
-  }
-  return lines.join("\n");
-}
 
 /**
  * Resolve a shorthand like "twitter:messages" to the full deep link URI.

@@ -52,7 +52,7 @@ async function ocrScreenshot(
   return matches;
 }
 
-export { ocrScreenshot, getWorker };
+export { ocrScreenshot };
 
 export function registerFindTextTool(
   server: McpServer,

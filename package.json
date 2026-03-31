@@ -24,5 +24,10 @@
     "onlyBuiltDependencies": [
       "esbuild"
     ]
+  },
+  "devDependencies": {
+    "eslint": "^10.1.0",
+    "knip": "^6.1.1",
+    "typescript": "^6.0.2"
   }
 }

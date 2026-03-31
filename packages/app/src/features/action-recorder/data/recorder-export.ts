@@ -9,7 +9,7 @@ interface BatchAction {
  * Convert recorded actions to MCP phone_batch format.
  * Inserts `wait` actions between steps based on timestamps.
  */
-export function toMcpBatch(actions: RecordedAction[]): BatchAction[] {
+function toMcpBatch(actions: RecordedAction[]): BatchAction[] {
   const batch: BatchAction[] = [];
 
   for (let i = 0; i < actions.length; i++) {
