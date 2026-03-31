@@ -8,6 +8,7 @@ target/
 !.env.example
 .claude/
 CLAUDE.md
+.mcp.json
 
 # Tauri
 packages/app/src-tauri/target/
