@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared package
+        run: pnpm build:shared
+
+      - name: TypeScript check
+        run: pnpm typecheck
+
+      - name: Run TS tests (app)
+        run: pnpm --filter @phone-stream/app test
+
+      - name: Run TS tests (MCP server)
+        run: pnpm --filter @phone-stream/mcp-server test
+
+      - name: Build MCP server
+        run: pnpm build:mcp
+
+  rust-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/app/src-tauri
+
+      - name: Cargo check
+        working-directory: packages/app/src-tauri
+        run: cargo check
+
+      - name: Cargo test
+        working-directory: packages/app/src-tauri
+        run: cargo test

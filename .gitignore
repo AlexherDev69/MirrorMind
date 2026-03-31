@@ -1,0 +1,28 @@
+node_modules/
+dist/
+target/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+.claude/
+CLAUDE.md
+
+# Tauri
+packages/app/src-tauri/target/
+packages/app/src-tauri/gen/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Build
+*.tsbuildinfo
+
