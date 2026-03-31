@@ -104,8 +104,87 @@ Claude Code (CLI)
 - **Node.js** >= 20
 - **pnpm** >= 9
 - **Rust** >= 1.77.2
-- **ADB** on PATH ([Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools))
-- Android phone with **USB debugging enabled**
+- **ADB** on PATH
+- Android phone + USB cable
+
+### Step-by-step prerequisites installation
+
+<details>
+<summary><b>1. Node.js</b></summary>
+
+Download and install Node.js **v20+** from [nodejs.org](https://nodejs.org/).
+
+Pick the LTS version. The installer adds Node to your PATH automatically.
+
+Verify:
+```bash
+node --version   # should print v20.x.x or higher
+```
+</details>
+
+<details>
+<summary><b>2. pnpm</b></summary>
+
+Once Node.js is installed:
+```bash
+npm install -g pnpm
+```
+
+Verify:
+```bash
+pnpm --version   # should print 9.x.x or higher
+```
+</details>
+
+<details>
+<summary><b>3. Rust</b></summary>
+
+Rust is needed to compile the Tauri backend.
+
+1. Download and run [rustup-init.exe](https://rustup.rs/)
+2. Follow the on-screen instructions (default options are fine)
+3. **Restart your terminal** after installation
+
+Verify:
+```bash
+rustc --version    # should print 1.77.x or higher
+cargo --version
+```
+
+> **Note**: On Windows, Rust also requires the [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/). The rustup installer will prompt you to install them if missing. Select "Desktop development with C++" workload.
+</details>
+
+<details>
+<summary><b>4. ADB (Android Debug Bridge)</b></summary>
+
+ADB is the bridge between your computer and Android phone.
+
+1. Download [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools) for Windows
+2. Extract the ZIP somewhere permanent (e.g. `C:\platform-tools`)
+3. **Add to PATH**:
+   - Open Windows Settings → search "Environment Variables"
+   - Edit the `Path` variable under "User variables"
+   - Add the folder path (e.g. `C:\platform-tools`)
+   - Click OK and **restart your terminal**
+
+Verify:
+```bash
+adb version   # should print "Android Debug Bridge version 1.0.x"
+```
+</details>
+
+<details>
+<summary><b>5. Enable USB Debugging on your phone</b></summary>
+
+This is required for your computer to communicate with your phone.
+
+1. Go to **Settings → About phone**
+2. Tap **Build number** 7 times (this enables Developer Options)
+3. Go back to **Settings → Developer Options**
+4. Enable **USB Debugging**
+
+> The exact path varies by phone brand. The app will show you brand-specific instructions when you first connect.
+</details>
 
 ## Installation
 
@@ -117,28 +196,38 @@ cd MirrorMind
 # Install dependencies
 pnpm install
 
-# Build shared types + MCP server
-pnpm build:mcp
-
-# Launch in dev mode (Rust + frontend)
+# Launch in dev mode (builds everything + starts Tauri app)
 pnpm dev
 ```
 
-## First-time Setup
+That's it. No `.env` file, no manual config, no tokens to copy.
 
-1. **Plug your phone** via USB
-2. The app detects your phone brand and guides you through enabling USB debugging
-3. **Authorize your computer** when prompted on the phone
-4. The stream starts automatically
+> **First build** takes a few minutes (Rust compilation). Subsequent launches are fast thanks to caching.
 
-### MCP Setup (for Claude Code)
+## First-time Phone Setup
 
-The app auto-configures Claude Code's MCP settings. Just:
+When you launch the app for the first time with a phone plugged in:
 
-1. Open the app settings
+1. The app **auto-detects your phone brand** (Samsung, Xiaomi, Pixel, OnePlus, etc.)
+2. Shows you **step-by-step instructions** specific to your phone to enable USB debugging
+3. When you authorize the computer on your phone, the **stream starts automatically**
+4. From now on, just plug your phone and it works instantly (no setup needed again)
+
+## MCP Setup (for Claude Code)
+
+MirrorMind lets Claude Code see and control your phone. Setup is automatic:
+
+1. Open MirrorMind settings (gear icon in the header)
 2. Click **"Install MCP"**
 3. Select your project folder
-4. Done — Claude Code now has access to your phone
+4. Restart Claude Code
+
+That's it. The app:
+- Generates an auth token automatically
+- Creates the `.mcp.json` config in your project
+- Claude Code picks it up on restart
+
+> You can install MCP on multiple projects. Each gets the same token pointing to the running app.
 
 ## Usage
 
