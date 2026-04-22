@@ -5,7 +5,7 @@ mod navigation;
 mod macros_api;
 
 // Re-export all handlers for server.rs routing
-pub use common::{health_handler, ApiError, ApiResponse};
+pub use common::health_handler;
 pub use device_control::{
     screenshot_handler, tap_handler, swipe_handler, type_text_handler,
     key_press_handler, display_size_handler,
