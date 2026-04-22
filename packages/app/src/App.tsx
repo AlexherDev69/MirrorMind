@@ -15,6 +15,7 @@ import { MacrosLibraryModal } from "./features/action-recorder/presentation/comp
 import { startLogcat, stopLogcat, clearLogcat } from "./features/logcat/data/logcat-service";
 import { useDevicePolling, type AdbDevice, type AppState } from "./core/hooks/useDevicePolling";
 import { useStreamEvents } from "./core/hooks/useStreamEvents";
+import { useClipboardShortcut } from "./features/clipboard/presentation/useClipboardShortcut";
 
 /** Convert technical error messages into user-friendly descriptions. */
 function formatStreamError(raw: string): string {
@@ -171,6 +172,9 @@ function App() {
       startStream(dev);
     }, [startStream]),
   });
+
+  // Clipboard shortcut: Ctrl+Shift+V → paste PC clipboard to phone
+  useClipboardShortcut(appState === "streaming");
 
   // Stream events
   useStreamEvents({
