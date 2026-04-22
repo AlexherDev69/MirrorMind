@@ -15,7 +15,21 @@ import { MacrosLibraryModal } from "./features/action-recorder/presentation/comp
 import { startLogcat, stopLogcat, clearLogcat } from "./features/logcat/data/logcat-service";
 import { useDevicePolling, type AdbDevice, type AppState } from "./core/hooks/useDevicePolling";
 import { useStreamEvents } from "./core/hooks/useStreamEvents";
+import { useAudioStream } from "./core/hooks/useAudioStream";
+import { useAudioStore } from "./features/streaming/presentation/stores/audio.store";
 import { useClipboardShortcut } from "./features/clipboard/presentation/useClipboardShortcut";
+import { WifiStatusBadge } from "./features/wifi-mode/presentation/components/WifiStatusBadge";
+import { WifiConnectModal } from "./features/wifi-mode/presentation/components/WifiConnectModal";
+import { WifiPairingModal } from "./features/wifi-mode/presentation/components/WifiPairingModal";
+import { WifiSecurityWarning } from "./features/wifi-mode/presentation/components/WifiSecurityWarning";
+import { useAutoTcpip, isWifiSerial } from "./features/wifi-mode/presentation/useAutoTcpip";
+import { useWifiStore } from "./features/wifi-mode/presentation/stores/wifi.store";
+import {
+  connectWifiDevice,
+  disconnectWifiDevice,
+  returnToUsb as returnToUsbApi,
+} from "./features/wifi-mode/data/wifi-api";
+import { showToast } from "./core/components/Toast";
 
 /** Convert technical error messages into user-friendly descriptions. */
 function formatStreamError(raw: string): string {
@@ -47,7 +61,21 @@ function App() {
   const [isMiniPlayer, setIsMiniPlayer] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showMacros, setShowMacros] = useState(false);
+  const [showWifiConnect, setShowWifiConnect] = useState(false);
+  const [showWifiPair, setShowWifiPair] = useState(false);
   const appStateRef = useRef<AppState>("no-device");
+  const setWifiMode = useWifiStore((s) => s.setMode);
+  const loadKnownWifi = useWifiStore((s) => s.loadKnown);
+  const knownWifiDevices = useWifiStore((s) => s.knownDevices);
+  const currentWifi = isWifiSerial(device?.serial ?? "");
+
+  // Keep the WiFi store's mode flag aligned with the active serial
+  useEffect(() => {
+    setWifiMode(currentWifi ? "wifi" : "usb");
+  }, [currentWifi, setWifiMode]);
+
+  // Silently enable tcpip when a USB device is present
+  useAutoTcpip(device?.serial ?? null, currentWifi);
 
   useEffect(() => {
     appStateRef.current = appState;
@@ -60,7 +88,61 @@ function App() {
     invoke<string>("check_adb_available")
       .then(() => setAdbAvailable(true))
       .catch(() => setAdbAvailable(false));
-  }, [loadSettings]);
+    loadKnownWifi();
+  }, [loadSettings, loadKnownWifi]);
+
+  // Try to reconnect known WiFi devices at startup
+  useEffect(() => {
+    if (adbAvailable !== true) return;
+    let cancelled = false;
+    (async () => {
+      let anyConnected = false;
+      for (const dev of knownWifiDevices) {
+        if (cancelled || !dev.lastIp) continue;
+        const host = dev.hostname ? `${dev.hostname}.local` : dev.lastIp;
+        try {
+          await connectWifiDevice(`${host}:5555`);
+          anyConnected = true;
+        } catch {
+          try {
+            await connectWifiDevice(`${dev.lastIp}:5555`);
+            anyConnected = true;
+          } catch {
+            /* unreachable — will fall through */
+          }
+        }
+      }
+      if (!cancelled && !anyConnected && knownWifiDevices.length > 0) {
+        showToast("Could not reconnect over WiFi. Plug the USB cable.", "info");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Only run once per adb-availability flip; knownWifiDevices snapshot is fine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adbAvailable]);
+
+  const handleReturnToUsb = useCallback(async () => {
+    if (!device) return;
+    const wifiAddress = device.serial;
+    // serial_usb is unknown once we're on a wifi serial; use scanned devices list
+    try {
+      const devices = await invoke<AdbDevice[]>("list_devices");
+      const usbDevice = devices.find(
+        (d) => d.state === "device" && !isWifiSerial(d.serial),
+      );
+      if (usbDevice) {
+        await returnToUsbApi(usbDevice.serial);
+      }
+      if (isWifiSerial(wifiAddress)) {
+        await disconnectWifiDevice(wifiAddress).catch(() => {});
+      }
+      showToast("Returned to USB mode. Plug the cable if needed.", "success");
+    } catch (err) {
+      showToast(`Return-to-USB failed: ${String(err)}`, "error");
+    }
+  }, [device]);
 
   // Start stream with auto-retry
   const startStream = useCallback(async (dev: AdbDevice) => {
@@ -176,6 +258,9 @@ function App() {
   // Clipboard shortcut: Ctrl+Shift+V → paste PC clipboard to phone
   useClipboardShortcut(appState === "streaming");
 
+  // Audio stream (Opus decoding + WebAudio playback)
+  useAudioStream();
+
   // Stream events
   useStreamEvents({
     appStateRef,
@@ -278,14 +363,32 @@ function App() {
           {/* Window group */}
           {appState === "streaming" && (
             <>
+              <MuteToggle />
               <MiniPlayerToggle isMini={isMiniPlayer} onToggle={() => toggleMiniPlayer()} />
               <FullscreenToggle onToggle={() => toggleFullscreen()} />
               <div className="w-px h-4 bg-zinc-700 mx-1" />
             </>
           )}
           {/* Settings + Status */}
+          {device && appState === "streaming" && !currentWifi && (
+            <button
+              onClick={() => setShowWifiConnect(true)}
+              className="text-[11px] px-2 py-1 rounded bg-emerald-900/40 hover:bg-emerald-800/60 text-emerald-200 transition-colors"
+              title="Switch to WiFi"
+            >
+              Switch to WiFi
+            </button>
+          )}
+          <button
+            onClick={() => setShowWifiPair(true)}
+            className="text-[11px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
+            title="Pair with Wireless Debugging (Android 11+)"
+          >
+            Pair
+          </button>
           <SettingsToggle />
           <McpStatus />
+          <WifiStatusBadge />
           <DeviceStatus state={appState} />
         </div>
       </header>
@@ -347,6 +450,33 @@ function App() {
       )}
 
       {showMacros && <MacrosLibraryModal onClose={() => setShowMacros(false)} />}
+      {showWifiConnect && device && (
+        <WifiConnectModal
+          usbSerial={device.serial}
+          onClose={() => setShowWifiConnect(false)}
+          onConnected={(wifiSerial) => {
+            setShowWifiConnect(false);
+            setDevice({ serial: wifiSerial, state: "device", model: device.model });
+            startStream({ serial: wifiSerial, state: "device", model: device.model });
+          }}
+        />
+      )}
+      {showWifiPair && (
+        <WifiPairingModal
+          onClose={() => setShowWifiPair(false)}
+          onPaired={(wifiSerial) => {
+            setShowWifiPair(false);
+            showToast("Paired over WiFi.", "success");
+            setDevice({ serial: wifiSerial, state: "device", model: "WiFi device" });
+            startStream({ serial: wifiSerial, state: "device", model: "WiFi device" });
+          }}
+        />
+      )}
+      {currentWifi && appState === "streaming" && !isMiniPlayer && !isFullscreen && (
+        <div className="px-3 pt-2">
+          <WifiSecurityWarning onReturnToUsb={handleReturnToUsb} />
+        </div>
+      )}
       <ToastContainer />
 
       <footer className={`flex items-center justify-between px-4 py-1.5 bg-zinc-900 border-t border-zinc-800 text-xs text-zinc-500 ${isMiniPlayer || isFullscreen ? "hidden" : ""}`}>
@@ -399,6 +529,40 @@ function MacrosToggle({ onOpen }: { readonly onOpen: () => void }) {
       aria-label="Macros library"
     >
       <Icon name="macros" className="w-4 h-4 text-zinc-400 group-hover:text-zinc-200" />
+    </button>
+  );
+}
+
+/** Mute toggle button for the phone audio stream. */
+function MuteToggle() {
+  const audioMuted = useAudioStore((s) => s.audioMuted);
+  const audioAvailable = useAudioStore((s) => s.audioAvailable);
+  const toggleMute = useAudioStore((s) => s.toggleMute);
+
+  if (!audioAvailable) {
+    return (
+      <button
+        disabled
+        className="flex items-center justify-center w-7 h-7 rounded opacity-40 cursor-not-allowed"
+        title="Audio unavailable (Android < 11)"
+        aria-label="Audio unavailable"
+      >
+        <Icon name="volume-x" className="w-4 h-4 text-zinc-500" />
+      </button>
+    );
+  }
+
+  return (
+    <button
+      onClick={toggleMute}
+      className="flex items-center justify-center w-7 h-7 rounded hover:bg-zinc-800 transition-colors group"
+      title={audioMuted ? "Unmute phone audio" : "Mute phone audio"}
+      aria-label={audioMuted ? "Unmute" : "Mute"}
+    >
+      <Icon
+        name={audioMuted ? "volume-off" : "volume-up"}
+        className={`w-4 h-4 ${audioMuted ? "text-zinc-500" : "text-zinc-400 group-hover:text-zinc-200"}`}
+      />
     </button>
   );
 }

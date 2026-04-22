@@ -33,6 +33,7 @@ const AMOTION_EVENT_ACTION_UP: u8 = 1;
 pub struct StreamState {
     pub stop_flag: Arc<AtomicBool>,
     pub control_socket: Arc<Mutex<Option<TcpStream>>>,
+    pub audio_socket: Arc<Mutex<Option<TcpStream>>>,
     pub screen_width: Arc<Mutex<u32>>,
     pub screen_height: Arc<Mutex<u32>>,
     pub recording_file: Arc<Mutex<Option<(std::fs::File, String)>>>,
@@ -132,7 +133,11 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
                     "CLASSPATH={} app_process / com.genymobile.scrcpy.Server {} \
                      tunnel_forward=true \
                      video=true \
-                     audio=false \
+                     audio=true \
+                     audio_codec=opus \
+                     audio_source=output \
+                     audio_bit_rate=128000 \
+                     audio_buffer=5 \
                      control=true \
                      send_device_meta=true \
                      send_frame_meta=true \
@@ -152,17 +157,19 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
     std::thread::sleep(Duration::from_millis(1000));
 
     // 4. Set up or reuse state
-    let (stop_flag, control_socket, screen_width, screen_height) =
+    let (stop_flag, control_socket, audio_socket, screen_width, screen_height) =
         if let Some(state) = app.try_state::<StreamState>() {
             // Reuse existing state (reconnection)
             state.stop_flag.store(false, Ordering::Relaxed);
             *state.control_socket.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *state.audio_socket.lock().unwrap_or_else(|e| e.into_inner()) = None;
             *state.screen_width.lock().unwrap_or_else(|e| e.into_inner()) = 0;
             *state.screen_height.lock().unwrap_or_else(|e| e.into_inner()) = 0;
             *state.recording_file.lock().unwrap_or_else(|e| e.into_inner()) = None;
             (
                 state.stop_flag.clone(),
                 state.control_socket.clone(),
+                state.audio_socket.clone(),
                 state.screen_width.clone(),
                 state.screen_height.clone(),
             )
@@ -170,24 +177,27 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
             // First connection
             let stop_flag = Arc::new(AtomicBool::new(false));
             let control_socket: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
+            let audio_socket: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
             let screen_width = Arc::new(Mutex::new(0u32));
             let screen_height = Arc::new(Mutex::new(0u32));
 
             app.manage(StreamState {
                 stop_flag: stop_flag.clone(),
                 control_socket: control_socket.clone(),
+                audio_socket: audio_socket.clone(),
                 screen_width: screen_width.clone(),
                 screen_height: screen_height.clone(),
                 recording_file: Arc::new(Mutex::new(None)),
             });
 
-            (stop_flag, control_socket, screen_width, screen_height)
+            (stop_flag, control_socket, audio_socket, screen_width, screen_height)
         };
 
     let _ = app.emit("stream-status", "starting");
 
     let stop_flag_clone = stop_flag.clone();
     let control_socket_clone = control_socket.clone();
+    let audio_socket_clone = audio_socket.clone();
     let screen_width_clone = screen_width.clone();
     let screen_height_clone = screen_height.clone();
 
@@ -196,6 +206,7 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
             &app,
             stop_flag_clone,
             control_socket_clone,
+            audio_socket_clone,
             screen_width_clone,
             screen_height_clone,
         ) {
@@ -215,14 +226,16 @@ fn connect_and_stream(
     app: &AppHandle,
     stop_flag: Arc<AtomicBool>,
     control_socket: Arc<Mutex<Option<TcpStream>>>,
+    audio_socket: Arc<Mutex<Option<TcpStream>>>,
     screen_width: Arc<Mutex<u32>>,
     screen_height: Arc<Mutex<u32>>,
 ) -> Result<(), String> {
-    // In tunnel_forward mode with video + control:
+    // In tunnel_forward mode with video + audio + control:
     // 1. Open video socket (first connection gets the dummy byte)
     // 2. Read dummy byte (0x00) on video socket
-    // 3. Open control socket immediately after
-    // 4. Then device meta + codec meta arrive on video socket
+    // 3. Open audio socket
+    // 4. Open control socket
+    // 5. Then device meta + codec meta arrive on video socket, audio codec meta on audio socket
 
     // Socket 1: Video — connect and read dummy byte with retry
     // ADB forward accepts TCP immediately, but scrcpy-server may not be ready yet.
@@ -247,7 +260,18 @@ fn connect_and_stream(
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| format!("Failed to set timeout: {}", e))?;
 
-    // Socket 2: Control — must connect immediately after dummy byte
+    // Socket 2: Audio — connect after video dummy byte, before control
+    match TcpStream::connect(format!("127.0.0.1:{}", LOCAL_PORT)) {
+        Ok(audio_stream) => {
+            eprintln!("[scrcpy] Audio socket connected successfully");
+            *audio_socket.lock().unwrap_or_else(|e| e.into_inner()) = Some(audio_stream);
+        }
+        Err(e) => {
+            eprintln!("[scrcpy] Audio socket FAILED: {}", e);
+        }
+    }
+
+    // Socket 3: Control — must connect after audio socket
     match TcpStream::connect(format!("127.0.0.1:{}", LOCAL_PORT)) {
         Ok(ctrl_stream) => {
             eprintln!("[scrcpy] Control socket connected successfully");
@@ -257,6 +281,9 @@ fn connect_and_stream(
             eprintln!("[scrcpy] Control socket FAILED: {}", e);
         }
     }
+
+    // Spawn audio reader thread (reads codec meta + audio frames)
+    spawn_audio_reader(app, audio_socket.clone(), stop_flag.clone());
 
     // Now read device metadata: 64 bytes device name
     let mut device_name_buf = [0u8; 64];
@@ -348,6 +375,100 @@ fn connect_and_stream(
     }
 
     Ok(())
+}
+
+/// Take ownership of the audio socket and spawn a background reader thread.
+/// Reads the 4-byte codec meta, emits `audio-info` or `audio-unavailable`,
+/// then streams audio packets as `audio-frame` events.
+fn spawn_audio_reader(
+    app: &AppHandle,
+    audio_socket: Arc<Mutex<Option<TcpStream>>>,
+    stop_flag: Arc<AtomicBool>,
+) {
+    // Take the stream out of the mutex — the reader thread owns it exclusively.
+    let mut stream = match audio_socket.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        Some(s) => s,
+        None => {
+            eprintln!("[scrcpy] Audio socket unavailable, skipping audio");
+            let _ = app.emit("audio-unavailable", "socket-not-connected");
+            return;
+        }
+    };
+
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
+            eprintln!("[scrcpy-audio] Failed to set timeout: {}", e);
+            return;
+        }
+
+        // Read 4-byte codec meta (FourCC). 0x00000000 means audio is disabled (Android < 11).
+        let mut codec_id_buf = [0u8; 4];
+        if stream.read_exact(&mut codec_id_buf).is_err() {
+            eprintln!("[scrcpy-audio] Failed to read codec meta");
+            let _ = app.emit("audio-unavailable", "codec-meta-read-failed");
+            return;
+        }
+
+        if codec_id_buf == [0, 0, 0, 0] {
+            eprintln!("[scrcpy-audio] Audio not available on this device (Android < 11)");
+            let _ = app.emit("audio-unavailable", "device-unsupported");
+            return;
+        }
+
+        let codec = String::from_utf8_lossy(&codec_id_buf).trim_end_matches('\0').to_string();
+        let _ = app.emit(
+            "audio-info",
+            serde_json::json!({ "codec": codec }),
+        );
+
+        read_audio_frames(&app, &mut stream, &stop_flag);
+    });
+}
+
+/// Inner loop that reads scrcpy audio packets and emits them as Tauri events.
+fn read_audio_frames(app: &AppHandle, stream: &mut TcpStream, stop_flag: &Arc<AtomicBool>) {
+    let mut header_buf = [0u8; 12];
+    let encoder = base64::engine::general_purpose::STANDARD;
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        match stream.read_exact(&mut header_buf) {
+            Ok(()) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(_) => {
+                let _ = app.emit("audio-status", "stopped");
+                return;
+            }
+        }
+
+        let pts_and_flags = u64::from_be_bytes(header_buf[0..8].try_into().unwrap());
+        let is_config = (pts_and_flags >> 63) & 1 == 1;
+        let is_key = (pts_and_flags >> 62) & 1 == 1;
+        let pts = pts_and_flags & 0x3FFF_FFFF_FFFF_FFFF;
+        let size = u32::from_be_bytes(header_buf[8..12].try_into().unwrap()) as usize;
+
+        if size == 0 || size > 1_000_000 {
+            continue;
+        }
+
+        let mut data = vec![0u8; size];
+        if stream.read_exact(&mut data).is_err() {
+            let _ = app.emit("audio-status", "stopped");
+            return;
+        }
+
+        let b64 = encoder.encode(&data);
+        let _ = app.emit(
+            "audio-frame",
+            serde_json::json!({
+                "pts": pts,
+                "isConfig": is_config,
+                "isKey": is_key,
+                "data": b64,
+            }),
+        );
+    }
 }
 
 /// Build a scrcpy inject touch event message.
@@ -694,6 +815,13 @@ pub async fn stop_stream(app: AppHandle, serial: String) -> Result<(), String> {
     super::adb::validate_serial(&serial)?;
     if let Some(state) = app.try_state::<StreamState>() {
         state.stop_flag.store(true, Ordering::Relaxed);
+        // Shutdown audio socket if still held in state (reader thread owns it once started)
+        if let Ok(mut guard) = state.audio_socket.lock() {
+            if let Some(ref s) = *guard {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            *guard = None;
+        }
     }
 
     let _ = Command::new("adb")

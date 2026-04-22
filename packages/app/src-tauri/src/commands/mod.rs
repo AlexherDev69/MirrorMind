@@ -3,4 +3,5 @@ pub mod logcat;
 pub mod macros;
 pub mod scrcpy;
 pub mod settings;
+pub mod wifi;
 pub mod window;

@@ -8,6 +8,7 @@ use commands::logcat::{self, LogcatState};
 use commands::macros;
 use commands::scrcpy;
 use commands::settings::{self, SettingsState};
+use commands::wifi;
 use commands::window::{self, NormalWindowGeometry};
 use internal_api::auth::{self, ApiState};
 use internal_api::server;
@@ -94,6 +95,15 @@ pub fn run() {
             macros::list_macros,
             macros::load_macro,
             macros::delete_macro,
+            wifi::enable_tcpip_auto,
+            wifi::connect_wifi_device,
+            wifi::disconnect_wifi_device,
+            wifi::return_to_usb,
+            wifi::wifi_pair,
+            wifi::discover_mdns_devices,
+            wifi::list_known_wifi_devices,
+            wifi::save_wifi_device,
+            wifi::remove_wifi_device,
         ])
         .setup(|app| {
             // Load and apply settings
