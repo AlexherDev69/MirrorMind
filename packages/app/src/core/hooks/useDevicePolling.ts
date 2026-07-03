@@ -11,6 +11,10 @@ export interface AdbDevice {
 export type AppState = "no-device" | "onboarding" | "connecting" | "streaming" | "disconnected" | "error";
 
 const DEVICE_POLL_INTERVAL_MS = 2000;
+// Require this many consecutive empty polls before declaring a device lost.
+// A single empty poll is often a transient adb hiccup (e.g. adbd restarting),
+// not a real unplug — debouncing avoids false "reconnect the cable" prompts.
+const DEVICE_LOST_THRESHOLD = 2;
 
 interface UseDevicePollingParams {
   readonly adbAvailable: boolean | null;
@@ -47,6 +51,9 @@ export function useDevicePolling({
     onReconnect,
   };
 
+  // Counts consecutive polls with no connected device (for debounced loss).
+  const emptyPollsRef = useRef(0);
+
   useEffect(() => {
     if (!adbAvailable) return;
 
@@ -58,6 +65,7 @@ export function useDevicePolling({
         const currentState = appStateRef.current;
 
         if (authorizedDevice) {
+          emptyPollsRef.current = 0;
           if (currentState === "no-device") {
             const onboarded = await isDeviceOnboarded(authorizedDevice.serial);
             callbacksRef.current.onAuthorizedDevice(authorizedDevice, onboarded);
@@ -67,15 +75,26 @@ export function useDevicePolling({
             callbacksRef.current.onAuthorizedDevice(authorizedDevice, false);
           }
         } else if (unauthorizedDevice) {
+          emptyPollsRef.current = 0;
           if (currentState === "no-device" || currentState === "onboarding") {
             callbacksRef.current.onUnauthorizedDevice(unauthorizedDevice);
           }
         } else {
           const currentState2 = appStateRef.current;
-          if (currentState2 === "streaming" || currentState2 === "connecting") {
-            callbacksRef.current.onDeviceLost();
-          } else if (currentState2 === "error") {
-            callbacksRef.current.onDeviceLost();
+          const relevant =
+            currentState2 === "streaming" ||
+            currentState2 === "connecting" ||
+            currentState2 === "error";
+          if (relevant) {
+            emptyPollsRef.current += 1;
+            // Only declare loss after several consecutive empty polls to ride
+            // out transient adb hiccups (adbd restart, USB re-enumeration).
+            if (emptyPollsRef.current >= DEVICE_LOST_THRESHOLD) {
+              emptyPollsRef.current = 0;
+              callbacksRef.current.onDeviceLost();
+            }
+          } else {
+            emptyPollsRef.current = 0;
           }
         }
       } catch {
