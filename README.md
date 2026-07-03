@@ -17,6 +17,10 @@ MirrorMind is a lightweight Windows desktop app that does two things:
 
 ## Demo
 
+<p align="center">
+  <img src="docs/demo.gif" alt="MirrorMind demo — Claude Code controlling an Android phone in real time" width="720">
+</p>
+
 ```
 You:  "Open Letterboxd and find the movie Inception"
 
