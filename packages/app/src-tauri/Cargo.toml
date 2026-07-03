@@ -1,6 +1,6 @@
 [package]
 name = "mirror-mind"
-version = "0.1.0"
+version = "0.1.2"
 description = "Stream your phone screen to Windows"
 authors = ["grimm"]
 edition = "2021"

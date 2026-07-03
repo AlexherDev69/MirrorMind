@@ -1,6 +1,6 @@
 {
   "name": "mirror-mind-to-windows",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "description": "Stream your phone screen to Windows and expose it to Claude Code via MCP",
   "scripts": {
