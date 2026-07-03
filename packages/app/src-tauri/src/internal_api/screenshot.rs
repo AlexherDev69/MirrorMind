@@ -1,9 +1,9 @@
-use std::process::Command;
+use crate::commands::process_utils::hidden_command;
 
 /// Capture a PNG screenshot from the phone via ADB.
 /// Returns raw PNG bytes.
 pub fn capture_screenshot(serial: &str) -> Result<Vec<u8>, String> {
-    let output = Command::new("adb")
+    let output = hidden_command("adb")
         .args(["-s", serial, "exec-out", "screencap", "-p"])
         .output()
         .map_err(|e| format!("Failed to execute adb screencap: {}", e))?;

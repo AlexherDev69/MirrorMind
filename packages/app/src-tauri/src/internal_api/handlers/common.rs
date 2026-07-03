@@ -117,7 +117,7 @@ fn parse_wxh(s: &str) -> Option<(u32, u32)> {
 // ── ADB command helpers ─────────────────────────────────────────
 
 pub fn adb_input_tap(serial: &str, x: f64, y: f64) -> Result<(), String> {
-    std::process::Command::new("adb")
+    crate::commands::process_utils::hidden_command("adb")
         .args(["-s", serial, "shell", "input", "tap", &(x.round() as i32).to_string(), &(y.round() as i32).to_string()])
         .output()
         .map_err(|e| format!("adb input tap failed: {}", e))?;
@@ -125,7 +125,7 @@ pub fn adb_input_tap(serial: &str, x: f64, y: f64) -> Result<(), String> {
 }
 
 pub fn adb_input_swipe(serial: &str, sx: f64, sy: f64, ex: f64, ey: f64, duration: u32) -> Result<(), String> {
-    std::process::Command::new("adb")
+    crate::commands::process_utils::hidden_command("adb")
         .args([
             "-s", serial, "shell", "input", "swipe",
             &(sx as i32).to_string(), &(sy as i32).to_string(),
@@ -152,7 +152,7 @@ pub fn adb_input_text(serial: &str, text: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    std::process::Command::new("adb")
+    crate::commands::process_utils::hidden_command("adb")
         .args(["-s", serial, "shell", "input", "text", &escaped])
         .output()
         .map_err(|e| format!("adb input text failed: {}", e))?;
@@ -160,7 +160,7 @@ pub fn adb_input_text(serial: &str, text: &str) -> Result<(), String> {
 }
 
 pub fn adb_input_keyevent(serial: &str, keycode: i32) -> Result<(), String> {
-    std::process::Command::new("adb")
+    crate::commands::process_utils::hidden_command("adb")
         .args(["-s", serial, "shell", "input", "keyevent", &keycode.to_string()])
         .output()
         .map_err(|e| format!("adb input keyevent failed: {}", e))?;

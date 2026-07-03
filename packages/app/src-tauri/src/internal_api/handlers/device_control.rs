@@ -155,7 +155,7 @@ pub async fn display_size_handler(
     Json(body): Json<DisplaySizeRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let serial = resolve_device_serial(&state, body.device_id).await?;
-    let output = std::process::Command::new("adb")
+    let output = crate::commands::process_utils::hidden_command("adb")
         .args(["-s", &serial, "shell", "wm", "size"])
         .output()
         .map_err(|e| format!("Failed to get display size: {}", e))?;

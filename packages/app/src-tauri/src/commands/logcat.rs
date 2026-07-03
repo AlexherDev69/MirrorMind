@@ -1,9 +1,11 @@
 use serde::Serialize;
 use std::io::BufRead;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
+
+use super::process_utils::hidden_command;
 
 /// Managed state for the logcat process.
 pub struct LogcatState {
@@ -95,7 +97,7 @@ pub async fn start_logcat(app: AppHandle, serial: String) -> Result<(), String> 
     state.is_running.store(true, Ordering::Relaxed);
     *state.serial.lock().unwrap_or_else(|e| e.into_inner()) = serial.clone();
 
-    let mut child = Command::new("adb")
+    let mut child = hidden_command("adb")
         .args(["-s", &serial, "logcat", "-v", "threadtime"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -138,7 +140,7 @@ pub async fn stop_logcat(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn clear_logcat(serial: String) -> Result<(), String> {
     super::adb::validate_serial(&serial)?;
-    Command::new("adb")
+    hidden_command("adb")
         .args(["-s", &serial, "logcat", "-c"])
         .output()
         .map_err(|e| format!("Failed to clear logcat: {}", e))?;

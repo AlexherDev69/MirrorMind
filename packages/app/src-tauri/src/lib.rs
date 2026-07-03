@@ -8,6 +8,7 @@ use commands::logcat::{self, LogcatState};
 use commands::macros;
 use commands::scrcpy;
 use commands::settings::{self, SettingsState};
+use commands::wifi;
 use commands::window::{self, NormalWindowGeometry};
 use internal_api::auth::{self, ApiState};
 use internal_api::server;
@@ -24,6 +25,13 @@ fn save_window_geometry(app: &tauri::AppHandle) {
         Some(w) => w,
         None => return,
     };
+
+    // Skip saving when minimized: Windows reports a (-32000, -32000) sentinel
+    // position for minimized windows, which would restore off-screen next launch.
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
+
     let position = window.outer_position().ok();
     let size = window.outer_size().ok();
 
@@ -94,6 +102,15 @@ pub fn run() {
             macros::list_macros,
             macros::load_macro,
             macros::delete_macro,
+            wifi::enable_tcpip_auto,
+            wifi::connect_wifi_device,
+            wifi::disconnect_wifi_device,
+            wifi::return_to_usb,
+            wifi::wifi_pair,
+            wifi::discover_mdns_devices,
+            wifi::list_known_wifi_devices,
+            wifi::save_wifi_device,
+            wifi::remove_wifi_device,
         ])
         .setup(|app| {
             // Load and apply settings
@@ -102,18 +119,21 @@ pub fn run() {
                 let _ = window.set_always_on_top(app_settings.always_on_top);
 
                 // Restore saved window geometry before showing
-                let has_saved_position = app_settings.window_x.is_some() && app_settings.window_y.is_some();
-
                 if let (Some(w), Some(h)) = (app_settings.window_width, app_settings.window_height) {
                     if w >= 320 && h >= 400 {
                         let _ = window.set_size(tauri::PhysicalSize::new(w, h));
                     }
                 }
-                if let (Some(x), Some(y)) = (app_settings.window_x, app_settings.window_y) {
-                    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-                }
+                // Reject off-screen / minimized-sentinel positions to avoid an invisible window.
+                let position_on_screen = match (app_settings.window_x, app_settings.window_y) {
+                    (Some(x), Some(y)) if x > -30000 && y > -30000 => {
+                        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+                        true
+                    }
+                    _ => false,
+                };
 
-                if !has_saved_position {
+                if !position_on_screen {
                     let _ = window.center();
                 }
 
