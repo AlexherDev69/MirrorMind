@@ -22,11 +22,12 @@ import { WifiStatusBadge } from "./features/wifi-mode/presentation/components/Wi
 import { WifiConnectModal } from "./features/wifi-mode/presentation/components/WifiConnectModal";
 import { WifiPairingModal } from "./features/wifi-mode/presentation/components/WifiPairingModal";
 import { WifiSecurityWarning } from "./features/wifi-mode/presentation/components/WifiSecurityWarning";
-import { useAutoTcpip, isWifiSerial } from "./features/wifi-mode/presentation/useAutoTcpip";
+import { isWifiSerial } from "./features/wifi-mode/presentation/wifi-serial";
 import { useWifiStore } from "./features/wifi-mode/presentation/stores/wifi.store";
 import {
   connectWifiDevice,
   disconnectWifiDevice,
+  enableTcpipAuto,
   returnToUsb as returnToUsbApi,
 } from "./features/wifi-mode/data/wifi-api";
 import { showToast } from "./core/components/Toast";
@@ -74,8 +75,8 @@ function App() {
     setWifiMode(currentWifi ? "wifi" : "usb");
   }, [currentWifi, setWifiMode]);
 
-  // Silently enable tcpip when a USB device is present
-  useAutoTcpip(device?.serial ?? null, currentWifi);
+  // Note: tcpip is enabled inside startStream (before the stream opens) so the
+  // adbd restart it triggers cannot kill an active scrcpy connection.
 
   useEffect(() => {
     appStateRef.current = appState;
@@ -148,9 +149,28 @@ function App() {
   const startStream = useCallback(async (dev: AdbDevice) => {
     const MAX_RETRIES = 3;
     const RETRY_DELAYS = [0, 2000, 4000];
+    // adbd needs a moment to come back after `adb tcpip` restarts it.
+    const TCPIP_SETTLE_MS = 1500;
 
     setAppState("connecting");
     setErrorMessage(null);
+
+    // Enable WiFi tcpip BEFORE opening the stream (once per USB serial per
+    // session). `adb tcpip` restarts adbd, which would drop an active stream —
+    // doing it here means there is no stream yet to break.
+    if (!isWifiSerial(dev.serial)) {
+      const wifi = useWifiStore.getState();
+      if (!wifi.tcpipEnabledSerials.has(dev.serial)) {
+        try {
+          const info = await enableTcpipAuto(dev.serial);
+          wifi.markTcpipEnabled(dev.serial, info);
+          await wifi.rememberDevice(info);
+          await new Promise((r) => setTimeout(r, TCPIP_SETTLE_MS));
+        } catch {
+          // tcpip is best-effort; the stream can still run over USB.
+        }
+      }
+    }
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       if (attempt > 0) {
