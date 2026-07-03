@@ -1,5 +1,9 @@
 use std::path::PathBuf;
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
+
+/// Official Node.js download page, opened from the MCP setup guide.
+const NODEJS_DOWNLOAD_URL: &str = "https://nodejs.org/en/download";
 
 /// Stores the MCP auth token so the frontend can retrieve it.
 pub struct McpToken(pub String);
@@ -33,7 +37,7 @@ pub async fn setup_mcp_for_project(
         return Err(format!("Directory does not exist: {}", project_path));
     }
 
-    let mcp_entry = get_mcp_server_path()?;
+    let mcp_entry = get_mcp_server_path(&app)?;
     let mcp_config = build_mcp_config(&mcp_entry, &token.0);
 
     let settings_path = project_dir
@@ -44,6 +48,34 @@ pub async fn setup_mcp_for_project(
     add_configured_project(&app, &project_path)?;
 
     Ok(settings_path.to_string_lossy().to_string())
+}
+
+/// Check whether `node` is available on PATH (the bundled MCP server runs on Node).
+/// Returns the version string when found, or `None` when Node is missing.
+#[tauri::command]
+pub async fn check_node_available() -> Result<Option<String>, String> {
+    match crate::commands::process_utils::hidden_command("node")
+        .arg("--version")
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            Ok(Some(if version.is_empty() {
+                "installed".to_string()
+            } else {
+                version
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Open the official Node.js download page in the default browser.
+#[tauri::command]
+pub async fn open_nodejs_download(app: tauri::AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(NODEJS_DOWNLOAD_URL, None::<&str>)
+        .map_err(|e| format!("Failed to open download page: {}", e))
 }
 
 #[tauri::command]
@@ -90,11 +122,23 @@ pub async fn check_mcp_installed(app: tauri::AppHandle) -> Result<bool, String> 
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-fn get_mcp_server_path() -> Result<String, String> {
+fn get_mcp_server_path(app: &tauri::AppHandle) -> Result<String, String> {
+    // Installed app: the self-contained MCP server is bundled as a resource.
+    if let Ok(bundled) = app
+        .path()
+        .resolve("mcp-server/index.js", tauri::path::BaseDirectory::Resource)
+    {
+        if bundled.exists() {
+            return Ok(bundled.to_string_lossy().to_string());
+        }
+    }
+
+    // Dev: run the MCP server straight from the workspace build output.
     let exe_path = std::env::current_exe()
         .map_err(|e| format!("Cannot find exe path: {}", e))?;
-    let project_root = find_project_root(&exe_path)
-        .ok_or("Cannot find project root directory")?;
+    let project_root = find_project_root(&exe_path).ok_or(
+        "MCP server not found. In development, run \"pnpm build:mcp\" from the repo root.",
+    )?;
     Ok(project_root
         .join("packages/mcp-server/dist/index.js")
         .to_string_lossy()

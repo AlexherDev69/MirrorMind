@@ -86,6 +86,8 @@ pub fn run() {
             mcp_config::remove_configured_project,
             mcp_config::check_mcp_installed,
             mcp_config::check_mcp_installed_at,
+            mcp_config::check_node_available,
+            mcp_config::open_nodejs_download,
             settings::load_settings,
             settings::save_settings,
             settings::set_always_on_top,

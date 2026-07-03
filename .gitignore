@@ -27,3 +27,6 @@ Desktop.ini
 # Build
 *.tsbuildinfo
 
+
+# Generated standalone MCP server bundle (created by bundle:mcp)
+packages/app/src-tauri/mcp-bundle/

@@ -5,7 +5,8 @@
   "description": "Stream your phone screen to Windows and expose it to Claude Code via MCP",
   "scripts": {
     "dev": "pnpm build:mcp && pnpm --filter @mirror-mind/app tauri dev",
-    "build": "pnpm build:mcp && pnpm --filter @mirror-mind/app tauri build",
+    "build": "pnpm build:mcp && pnpm bundle:mcp && pnpm --filter @mirror-mind/app tauri build",
+    "bundle:mcp": "node packages/app/scripts/bundle-mcp.mjs",
     "dev:frontend": "pnpm --filter @mirror-mind/app dev",
     "build:frontend": "pnpm --filter @mirror-mind/app build",
     "build:shared": "pnpm --filter @mirror-mind/shared build",

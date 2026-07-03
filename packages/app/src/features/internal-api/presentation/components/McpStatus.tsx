@@ -52,6 +52,9 @@ function McpSetupModal({ onClose, onInstalled }: McpSetupModalProps) {
   const [configuredProjects, setConfiguredProjects] = useState<string[]>([]);
   const [mcpToken, setMcpToken] = useState("");
   const [tokenCopied, setTokenCopied] = useState(false);
+  // null = checking, true = Node present, false = Node missing (show install guide)
+  const [nodeReady, setNodeReady] = useState<boolean | null>(null);
+  const [recheckingNode, setRecheckingNode] = useState(false);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -60,10 +63,26 @@ function McpSetupModal({ onClose, onInstalled }: McpSetupModalProps) {
     } catch { /* ignore */ }
   }, []);
 
+  const checkNode = useCallback(async () => {
+    try {
+      const version = await invoke<string | null>("check_node_available");
+      setNodeReady(!!version);
+    } catch {
+      setNodeReady(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadProjects();
+    checkNode();
     invoke<string>("get_mcp_token").then(setMcpToken).catch(() => setMcpToken(""));
-  }, [loadProjects]);
+  }, [loadProjects, checkNode]);
+
+  const handleRecheckNode = useCallback(async () => {
+    setRecheckingNode(true);
+    await checkNode();
+    setRecheckingNode(false);
+  }, [checkNode]);
 
   const handleCopyToken = useCallback(async () => {
     await navigator.clipboard.writeText(mcpToken);
@@ -122,14 +141,20 @@ function McpSetupModal({ onClose, onInstalled }: McpSetupModalProps) {
         </div>
       }
     >
-      {installState === "idle" && (
-        <IdleView onSelectFolder={handleSelectAndInstall} configuredProjects={configuredProjects} onRemoveProject={handleRemoveProject} />
+      {nodeReady === false ? (
+        <NodeGuideView onRecheck={handleRecheckNode} rechecking={recheckingNode} />
+      ) : (
+        <>
+          {installState === "idle" && (
+            <IdleView onSelectFolder={handleSelectAndInstall} configuredProjects={configuredProjects} onRemoveProject={handleRemoveProject} />
+          )}
+          {installState === "installing" && <InstallingView />}
+          {installState === "installed" && (
+            <InstalledView settingsPath={settingsPath} onAddAnother={handleSelectAndInstall} configuredProjects={configuredProjects} onRemoveProject={handleRemoveProject} />
+          )}
+          {installState === "error" && <ErrorView error={errorMsg} onRetry={handleSelectAndInstall} />}
+        </>
       )}
-      {installState === "installing" && <InstallingView />}
-      {installState === "installed" && (
-        <InstalledView settingsPath={settingsPath} onAddAnother={handleSelectAndInstall} configuredProjects={configuredProjects} onRemoveProject={handleRemoveProject} />
-      )}
-      {installState === "error" && <ErrorView error={errorMsg} onRetry={handleSelectAndInstall} />}
     </Modal>
   );
 }
@@ -196,6 +221,56 @@ function ErrorView({ error, onRetry }: { readonly error: string; readonly onRetr
       <p className="text-sm font-medium text-red-400">Install failed</p>
       <p className="text-xs text-zinc-500">{error}</p>
       <Button variant="secondary" fullWidth onClick={onRetry}>Try again</Button>
+    </div>
+  );
+}
+
+function NodeGuideView({ onRecheck, rechecking }: {
+  readonly onRecheck: () => void;
+  readonly rechecking: boolean;
+}) {
+  const openDownload = useCallback(() => {
+    invoke("open_nodejs_download").catch(() => { /* ignore */ });
+  }, []);
+
+  return (
+    <div className="space-y-4">
+      <div className="text-center">
+        <div className="w-12 h-12 mx-auto rounded-full bg-amber-950 flex items-center justify-center">
+          <Icon name="error" className="w-6 h-6 text-amber-400" />
+        </div>
+        <p className="text-sm font-medium text-amber-400 mt-2">Node.js is required</p>
+        <p className="text-xs text-zinc-500 mt-1">
+          The MirrorMind MCP server runs on Node.js. Install it once, then re-check.
+        </p>
+      </div>
+
+      <ol className="space-y-2.5 text-xs text-zinc-400">
+        <li className="flex gap-2">
+          <span className="text-purple-400 font-semibold">1.</span>
+          <span>Download the <span className="text-zinc-300">LTS</span> installer (button below), or run it via winget:</span>
+        </li>
+        <li>
+          <code className="block text-[11px] text-zinc-400 bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 select-all font-mono">
+            winget install OpenJS.NodeJS.LTS
+          </code>
+        </li>
+        <li className="flex gap-2">
+          <span className="text-purple-400 font-semibold">2.</span>
+          <span>Run the installer and keep the default options.</span>
+        </li>
+        <li className="flex gap-2">
+          <span className="text-purple-400 font-semibold">3.</span>
+          <span>Click <span className="text-zinc-300">Re-check</span> below (restart MirrorMind if it is still not detected).</span>
+        </li>
+      </ol>
+
+      <div className="flex gap-2">
+        <Button variant="primary" fullWidth onClick={openDownload}>Download Node.js</Button>
+        <Button variant="secondary" fullWidth onClick={onRecheck}>
+          {rechecking ? "Checking..." : "Re-check"}
+        </Button>
+      </div>
     </div>
   );
 }
