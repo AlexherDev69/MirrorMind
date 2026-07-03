@@ -76,7 +76,7 @@ const API_HOST: &str = "127.0.0.1";
 fn kill_process_on_port(port: u16) {
     #[cfg(target_os = "windows")]
     {
-        let output = std::process::Command::new("netstat")
+        let output = crate::commands::process_utils::hidden_command("netstat")
             .args(["-ano"])
             .output();
 
@@ -91,7 +91,7 @@ fn kill_process_on_port(port: u16) {
                             // Don't kill ourselves
                             if pid != std::process::id() {
                                 eprintln!("[internal-api] Killing stale process {} on port {}", pid, port);
-                                let _ = std::process::Command::new("taskkill")
+                                let _ = crate::commands::process_utils::hidden_command("taskkill")
                                     .args(["/F", "/PID", &pid.to_string()])
                                     .output();
                             }

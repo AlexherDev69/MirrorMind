@@ -3,6 +3,8 @@ use std::sync::Mutex;
 use tauri::AppHandle;
 use tauri::Manager;
 
+use super::process_utils::hidden_command;
+
 const SETTINGS_FILE: &str = "settings.json";
 const ONBOARDED_DEVICES_FILE: &str = "onboarded_devices.json";
 
@@ -187,7 +189,7 @@ pub async fn take_screenshot(app: AppHandle) -> Result<String, String> {
     let serial = super::adb::find_first_connected_device()?;
 
     // Capture via adb screencap
-    let output = std::process::Command::new("adb")
+    let output = hidden_command("adb")
         .args(["-s", &serial, "exec-out", "screencap", "-p"])
         .output()
         .map_err(|e| format!("Screenshot failed: {}", e))?;
@@ -279,7 +281,7 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
     // Remux H.264 → MP4 via ffmpeg
     let mp4_path = h264_path.replace(".h264", ".mp4");
 
-    let output = std::process::Command::new("ffmpeg")
+    let output = hidden_command("ffmpeg")
         .args([
             "-y",                    // overwrite
             "-f", "h264",            // input format

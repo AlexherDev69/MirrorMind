@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
-use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
 use super::adb::validate_serial;
+use super::process_utils::hidden_tokio_command;
 
 const WIFI_DEVICES_FILE: &str = "wifi_devices.json";
 const ADB_TIMEOUT: Duration = Duration::from_secs(5);
@@ -82,7 +82,7 @@ fn validate_address(address: &str) -> Result<(), String> {
 
 /// Run an adb command with a timeout. Returns (stdout, stderr) on success.
 async fn run_adb(args: &[&str], dur: Duration) -> Result<(String, String), String> {
-    let mut cmd = TokioCommand::new("adb");
+    let mut cmd = hidden_tokio_command("adb");
     cmd.args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

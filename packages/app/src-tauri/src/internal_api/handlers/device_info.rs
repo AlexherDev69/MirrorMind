@@ -32,25 +32,25 @@ pub async fn device_info_handler(
     adb::validate_serial(&serial)
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
 
-    let output = std::process::Command::new("adb")
+    let output = crate::commands::process_utils::hidden_command("adb")
         .args(["-s", &serial, "shell", "getprop ro.product.model"])
         .output()
         .map_err(|e| format!("Failed to get device info: {}", e))?;
     let model = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    let output = std::process::Command::new("adb")
+    let output = crate::commands::process_utils::hidden_command("adb")
         .args(["-s", &serial, "shell", "getprop ro.product.brand"])
         .output()
         .map_err(|e| format!("Failed to get brand: {}", e))?;
     let brand = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    let output = std::process::Command::new("adb")
+    let output = crate::commands::process_utils::hidden_command("adb")
         .args(["-s", &serial, "shell", "getprop ro.build.version.release"])
         .output()
         .map_err(|e| format!("Failed to get android version: {}", e))?;
     let android_version = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    let output = std::process::Command::new("adb")
+    let output = crate::commands::process_utils::hidden_command("adb")
         .args(["-s", &serial, "shell", "wm", "size"])
         .output()
         .map_err(|e| format!("Failed to get screen size: {}", e))?;

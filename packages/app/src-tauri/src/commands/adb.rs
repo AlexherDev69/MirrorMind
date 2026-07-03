@@ -1,6 +1,7 @@
 use serde::Serialize;
-use std::process::Command;
 use tauri::{AppHandle, Manager};
+
+use super::process_utils::hidden_command;
 
 const ONBOARDED_DEVICES_FILE: &str = "onboarded_devices.json";
 
@@ -28,7 +29,7 @@ pub struct AdbDevice {
 
 /// Find the first connected device serial (sync, for use in non-async contexts).
 pub fn find_first_connected_device() -> Result<String, String> {
-    let output = Command::new("adb")
+    let output = hidden_command("adb")
         .args(["devices"])
         .output()
         .map_err(|e| format!("adb failed: {}", e))?;
@@ -51,7 +52,7 @@ pub fn find_first_connected_device() -> Result<String, String> {
 
 #[tauri::command]
 pub async fn list_devices() -> Result<Vec<AdbDevice>, String> {
-    let output = Command::new("adb")
+    let output = hidden_command("adb")
         .args(["devices", "-l"])
         .output()
         .map_err(|e| format!("Failed to run adb: {}. Is adb installed and on PATH?", e))?;
@@ -102,7 +103,7 @@ fn parse_device_line(line: &str) -> Option<AdbDevice> {
 
 #[tauri::command]
 pub async fn check_adb_available() -> Result<String, String> {
-    let output = Command::new("adb")
+    let output = hidden_command("adb")
         .arg("version")
         .output()
         .map_err(|e| format!("adb not found: {}. Please install Android SDK Platform Tools.", e))?;
@@ -119,7 +120,7 @@ pub async fn check_adb_available() -> Result<String, String> {
 #[tauri::command]
 pub async fn get_device_brand(serial: String) -> Result<String, String> {
     validate_serial(&serial)?;
-    let output = Command::new("adb")
+    let output = hidden_command("adb")
         .args(["-s", &serial, "shell", "getprop", "ro.product.brand"])
         .output()
         .map_err(|e| format!("Failed to get brand: {}", e))?;

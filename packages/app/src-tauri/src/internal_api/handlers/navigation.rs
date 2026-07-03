@@ -20,7 +20,7 @@ pub async fn current_activity_handler(
     Json(body): Json<ScreenshotRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let serial = resolve_device_serial(&state, body.device_id).await?;
-    let output = std::process::Command::new("adb")
+    let output = crate::commands::process_utils::hidden_command("adb")
         .args(["-s", &serial, "shell", "dumpsys", "activity", "activities"])
         .output()
         .map_err(|e| format!("adb dumpsys failed: {}", e))?;
@@ -68,7 +68,7 @@ pub async fn run_app_handler(
         return Err(ApiError::from("Invalid package name".to_string()));
     }
 
-    let output = std::process::Command::new("adb")
+    let output = crate::commands::process_utils::hidden_command("adb")
         .args(["-s", &serial, "shell", "monkey", "-p", &body.package_name, "-c", "android.intent.category.LAUNCHER", "1"])
         .output()
         .map_err(|e| format!("adb monkey failed: {}", e))?;
@@ -121,7 +121,7 @@ pub async fn deep_link_handler(
         return Err(ApiError(StatusCode::BAD_REQUEST, "URI contains invalid characters".to_string()));
     }
 
-    let output = std::process::Command::new("adb")
+    let output = crate::commands::process_utils::hidden_command("adb")
         .args(["-s", &serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", &body.uri])
         .output()
         .map_err(|e| format!("adb am start failed: {}", e))?;
@@ -142,7 +142,7 @@ pub async fn ui_tree_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let serial = resolve_device_serial(&state, body.device_id).await?;
 
-    let output = std::process::Command::new("adb")
+    let output = crate::commands::process_utils::hidden_command("adb")
         .args(["-s", &serial, "exec-out", "uiautomator", "dump", "/dev/tty"])
         .output()
         .map_err(|e| format!("uiautomator dump failed: {}", e))?;
@@ -156,10 +156,10 @@ pub async fn ui_tree_handler(
     };
 
     if xml.is_empty() || !xml.contains("node") {
-        let _ = std::process::Command::new("adb")
+        let _ = crate::commands::process_utils::hidden_command("adb")
             .args(["-s", &serial, "shell", "uiautomator", "dump", "/data/local/tmp/ps_ui.xml"])
             .output();
-        let cat = std::process::Command::new("adb")
+        let cat = crate::commands::process_utils::hidden_command("adb")
             .args(["-s", &serial, "exec-out", "cat", "/data/local/tmp/ps_ui.xml"])
             .output()
             .map_err(|e| format!("Failed to read UI dump: {}", e))?;
