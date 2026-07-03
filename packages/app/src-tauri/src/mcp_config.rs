@@ -37,17 +37,19 @@ pub async fn setup_mcp_for_project(
         return Err(format!("Directory does not exist: {}", project_path));
     }
 
-    let mcp_entry = get_mcp_server_path(&app)?;
+    let mcp_entry = normalize_mcp_path(get_mcp_server_path(&app)?);
     let mcp_config = build_mcp_config(&mcp_entry, &token.0);
 
-    let settings_path = project_dir
-        .join(".claude")
-        .join("settings.local.json");
-    write_mcp_to_settings(&settings_path, &mcp_config)?;
+    // Claude Code reads project-scoped MCP servers from `.mcp.json` (not from
+    // settings.local.json). The token stays local via .gitignore.
+    let mcp_json_path = project_dir.join(".mcp.json");
+    write_mcp_config_file(&mcp_json_path, &mcp_config)?;
+    ensure_gitignored(&project_dir, ".mcp.json");
+    remove_legacy_settings_entry(&project_dir);
 
     add_configured_project(&app, &project_path)?;
 
-    Ok(settings_path.to_string_lossy().to_string())
+    Ok(mcp_json_path.to_string_lossy().to_string())
 }
 
 /// Check whether `node` is available on PATH (the bundled MCP server runs on Node).
@@ -105,10 +107,8 @@ pub async fn remove_configured_project(
 
 #[tauri::command]
 pub async fn check_mcp_installed_at(project_path: String) -> Result<bool, String> {
-    let settings_path = PathBuf::from(&project_path)
-        .join(".claude")
-        .join("settings.local.json");
-    check_mcp_in_file(&settings_path)
+    let mcp_json_path = PathBuf::from(&project_path).join(".mcp.json");
+    check_mcp_in_file(&mcp_json_path)
 }
 
 #[tauri::command]
@@ -147,6 +147,7 @@ fn get_mcp_server_path(app: &tauri::AppHandle) -> Result<String, String> {
 
 fn build_mcp_config(mcp_entry: &str, token: &str) -> serde_json::Value {
     serde_json::json!({
+        "type": "stdio",
         "command": "node",
         "args": [mcp_entry],
         "env": {
@@ -155,7 +156,51 @@ fn build_mcp_config(mcp_entry: &str, token: &str) -> serde_json::Value {
     })
 }
 
-fn write_mcp_to_settings(
+/// Strip the Windows extended-length path prefix (`\\?\`) that `resolve` may
+/// return. Node.js rejects paths carrying this prefix.
+fn normalize_mcp_path(path: String) -> String {
+    path.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(path)
+}
+
+/// Ensure `entry` is listed in the project's `.gitignore` so the file (which
+/// carries the auth token) is never committed. Creates `.gitignore` if absent.
+fn ensure_gitignored(project_dir: &std::path::Path, entry: &str) {
+    let gitignore = project_dir.join(".gitignore");
+    let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
+    if existing.lines().any(|line| line.trim() == entry) {
+        return;
+    }
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&format!("\n# MirrorMind MCP config (contains a local auth token)\n{}\n", entry));
+    let _ = std::fs::write(&gitignore, content);
+}
+
+/// Remove the legacy `mirror-mind` entry from `.claude/settings.local.json`.
+/// Older versions wrote the server there, but Claude Code never read it.
+fn remove_legacy_settings_entry(project_dir: &std::path::Path) {
+    let path = project_dir.join(".claude").join("settings.local.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    let removed = settings
+        .get_mut("mcpServers")
+        .and_then(|s| s.as_object_mut())
+        .map(|servers| servers.remove("mirror-mind").is_some())
+        .unwrap_or(false);
+    if removed {
+        if let Ok(formatted) = serde_json::to_string_pretty(&settings) {
+            let _ = std::fs::write(&path, formatted);
+        }
+    }
+}
+
+fn write_mcp_config_file(
     settings_path: &std::path::Path,
     mcp_config: &serde_json::Value,
 ) -> Result<(), String> {
@@ -317,7 +362,6 @@ pub fn update_token_in_file(token: &str, file_path: &std::path::Path) -> bool {
 pub fn update_token_in_all_projects(token: &str, projects: &[String]) {
     for project_path in projects {
         let project_dir = PathBuf::from(project_path);
-        update_token_in_file(token, &project_dir.join(".claude").join("settings.local.json"));
         update_token_in_file(token, &project_dir.join(".mcp.json"));
     }
 }
