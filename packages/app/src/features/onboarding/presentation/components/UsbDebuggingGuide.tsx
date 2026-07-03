@@ -1,4 +1,4 @@
-import type { PhoneBrand } from "@phone-stream/shared";
+import type { PhoneBrand } from "@mirror-mind/shared";
 import { BRAND_INSTRUCTIONS } from "../../domain/brand-instructions";
 
 interface UsbDebuggingGuideProps {

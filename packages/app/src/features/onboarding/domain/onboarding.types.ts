@@ -1,4 +1,4 @@
-import type { PhoneBrand } from "@phone-stream/shared";
+import type { PhoneBrand } from "@mirror-mind/shared";
 
 export type OnboardingStep =
   | "welcome"

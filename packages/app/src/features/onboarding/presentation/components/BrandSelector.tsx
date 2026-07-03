@@ -1,4 +1,4 @@
-import type { PhoneBrand } from "@phone-stream/shared";
+import type { PhoneBrand } from "@mirror-mind/shared";
 import { BRAND_INSTRUCTIONS, BRAND_ORDER } from "../../domain/brand-instructions";
 
 interface BrandSelectorProps {

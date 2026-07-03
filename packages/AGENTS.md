@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Container directory for three packages in the PhoneStream monorepo: the Tauri desktop app, MirrorMind MCP server, and shared types library.
+Container directory for three packages in the MirrorMind monorepo: the Tauri desktop app, MirrorMind MCP server, and shared types library.
 
 ## Subdirectories
 

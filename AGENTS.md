@@ -1,10 +1,10 @@
 <!-- Generated: 2026-04-22 | Updated: 2026-04-22 -->
 
-# PhoneStream: Root
+# MirrorMind: Root
 
 ## Purpose
 
-PhoneStream is a monorepo (pnpm workspaces) containing three integrated packages: a Tauri desktop application with React frontend for real-time Android phone screen streaming, a Node.js MCP server ("MirrorMind") for Claude Code integration, and shared TypeScript types/constants. The desktop app detects Android phones via USB, streams H.264 video via scrcpy protocol, and exposes device control to Claude Code through HTTP endpoints.
+MirrorMind is a monorepo (pnpm workspaces) containing three integrated packages: a Tauri desktop application with React frontend for real-time Android phone screen streaming, a Node.js MCP server ("MirrorMind") for Claude Code integration, and shared TypeScript types/constants. The desktop app detects Android phones via USB, streams H.264 video via scrcpy protocol, and exposes device control to Claude Code through HTTP endpoints.
 
 ## Key Files
 
