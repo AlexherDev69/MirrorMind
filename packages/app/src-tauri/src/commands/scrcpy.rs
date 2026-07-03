@@ -1,11 +1,12 @@
 use base64::Engine;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
+
+use super::process_utils::hidden_command;
 
 const SCRCPY_SERVER_PATH: &str = "/data/local/tmp/scrcpy-server.jar";
 const SCRCPY_VERSION: &str = "3.1";
@@ -40,11 +41,11 @@ pub struct StreamState {
 }
 
 #[tauri::command]
-pub async fn push_scrcpy_server(serial: String) -> Result<(), String> {
+pub async fn push_scrcpy_server(app: AppHandle, serial: String) -> Result<(), String> {
     super::adb::validate_serial(&serial)?;
-    let server_path = get_server_jar_path()?;
+    let server_path = get_server_jar_path(&app)?;
 
-    let output = Command::new("adb")
+    let output = hidden_command("adb")
         .args(["-s", &serial, "push", &server_path, SCRCPY_SERVER_PATH])
         .output()
         .map_err(|e| format!("Failed to push scrcpy-server: {}", e))?;
@@ -59,24 +60,25 @@ pub async fn push_scrcpy_server(serial: String) -> Result<(), String> {
     Ok(())
 }
 
-fn get_server_jar_path() -> Result<String, String> {
-    let paths = [
-        "public/assets/scrcpy-server.jar".to_string(),
-        "../public/assets/scrcpy-server.jar".to_string(),
-    ];
-
-    for path in &paths {
-        if std::path::Path::new(path).exists() {
-            return Ok(path.clone());
+fn get_server_jar_path(app: &AppHandle) -> Result<String, String> {
+    // Bundled release: resolve from the Tauri resource directory.
+    if let Ok(resource_path) = app
+        .path()
+        .resolve("assets/scrcpy-server.jar", tauri::path::BaseDirectory::Resource)
+    {
+        if resource_path.exists() {
+            return Ok(resource_path.to_string_lossy().to_string());
         }
     }
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(dir) = exe_path.parent() {
-            let resource_path = dir.join("assets").join("scrcpy-server.jar");
-            if resource_path.exists() {
-                return Ok(resource_path.to_string_lossy().to_string());
-            }
+    // Dev fallback: relative to the working directory.
+    let dev_paths = [
+        "public/assets/scrcpy-server.jar",
+        "../public/assets/scrcpy-server.jar",
+    ];
+    for path in dev_paths {
+        if std::path::Path::new(path).exists() {
+            return Ok(path.to_string());
         }
     }
 
@@ -88,12 +90,12 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
     super::adb::validate_serial(&serial)?;
 
     // 1. Remove any previous port forwarding
-    let _ = Command::new("adb")
+    let _ = hidden_command("adb")
         .args(["-s", &serial, "forward", "--remove", &format!("tcp:{}", LOCAL_PORT)])
         .output();
 
     // 2. Set up port forwarding
-    let output = Command::new("adb")
+    let output = hidden_command("adb")
         .args(["-s", &serial, "forward", &format!("tcp:{}", LOCAL_PORT), "localabstract:scrcpy"])
         .output()
         .map_err(|e| format!("Failed to set up port forwarding: {}", e))?;
@@ -124,7 +126,7 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
 
     let serial_clone = serial.clone();
     std::thread::spawn(move || {
-        let _ = Command::new("adb")
+        let _ = hidden_command("adb")
             .args([
                 "-s",
                 &serial_clone,
@@ -824,7 +826,7 @@ pub async fn stop_stream(app: AppHandle, serial: String) -> Result<(), String> {
         }
     }
 
-    let _ = Command::new("adb")
+    let _ = hidden_command("adb")
         .args(["-s", &serial, "forward", "--remove", &format!("tcp:{}", LOCAL_PORT)])
         .output();
 
