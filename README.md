@@ -5,7 +5,9 @@ Stream your Android phone screen to your desktop and let Claude Code see and con
 ![Windows](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-FFC131?logo=tauri)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-POC-orange)
+[![Release](https://img.shields.io/github/v/release/AlexherDev69/MirrorMind?color=10B981&label=release)](https://github.com/AlexherDev69/MirrorMind/releases/latest)
+
+**[⬇ Download the latest installer](https://github.com/AlexherDev69/MirrorMind/releases/latest)** — Windows MSI / NSIS. Requires `adb` on PATH and Node.js (for the MCP feature).
 
 ## What is MirrorMind?
 
@@ -16,6 +18,10 @@ MirrorMind is a lightweight Windows desktop app that does two things:
 2. **MCP Server** — Claude Code can see your phone screen and interact with it through 18 MCP tools. Take screenshots, tap buttons, type text, navigate apps, run macros — all from your AI assistant.
 
 ## Demo
+
+<p align="center">
+  <img src="docs/demo.gif" alt="MirrorMind demo — Claude Code controlling an Android phone in real time" width="720">
+</p>
 
 ```
 You:  "Open Letterboxd and find the movie Inception"
