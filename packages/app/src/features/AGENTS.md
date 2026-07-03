@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Feature modules implementing the core functionality of the PhoneStream app. Each feature is self-contained and follows clean architecture (domain/data/presentation pattern). Features handle device detection, video streaming, input control, MCP integration, onboarding, settings, and logcat streaming.
+Feature modules implementing the core functionality of the MirrorMind app. Each feature is self-contained and follows clean architecture (domain/data/presentation pattern). Features handle device detection, video streaming, input control, MCP integration, onboarding, settings, and logcat streaming.
 
 ## Subdirectories
 

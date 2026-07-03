@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PhoneBrand } from "@phone-stream/shared";
+import type { PhoneBrand } from "@mirror-mind/shared";
 import type { OnboardingStep } from "../../domain/onboarding.types";
 
 interface OnboardingStore {

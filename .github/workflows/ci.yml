@@ -30,13 +30,13 @@ jobs:
         run: pnpm typecheck
 
       - name: Run TS tests (app)
-        run: pnpm --filter @phone-stream/app test
+        run: pnpm --filter @mirror-mind/app test
 
       - name: Run TS tests (MCP server)
-        run: pnpm --filter @phone-stream/mcp-server test
+        run: pnpm --filter @mirror-mind/mcp-server test
 
       - name: Run TS tests (shared)
-        run: pnpm --filter @phone-stream/shared test
+        run: pnpm --filter @mirror-mind/shared test
 
       - name: Build MCP server
         run: pnpm build:mcp

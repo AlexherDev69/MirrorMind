@@ -11,7 +11,7 @@ import {
   type CurrentActivityResponse,
   type RunAppRequest,
   type StreamStatus,
-} from "@phone-stream/shared";
+} from "@mirror-mind/shared";
 import { logger } from "../core/logger.js";
 
 interface DeviceInfo {
@@ -148,7 +148,7 @@ export class TauriBridgeClient {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error(`Failed to connect to Tauri app at ${url}: ${msg}`);
       throw new Error(
-        `Cannot reach PhoneStream app. Make sure it is running. (${msg})`,
+        `Cannot reach MirrorMind app. Make sure it is running. (${msg})`,
       );
     }
 

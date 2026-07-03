@@ -5,5 +5,5 @@ export default defineConfig({
   format: ["esm"],
   target: "node20",
   clean: true,
-  noExternal: ["@phone-stream/shared"],
+  noExternal: ["@mirror-mind/shared"],
 });

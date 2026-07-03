@@ -4,14 +4,14 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 
 /// Setup the system tray icon with a context menu (Show, Quit).
 pub fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let show_item = MenuItem::with_id(app, "show", "Show PhoneStream", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show", "Show MirrorMind", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
     let _tray = TrayIconBuilder::new()
         .icon(app.default_window_icon().cloned().unwrap())
         .menu(&tray_menu)
-        .tooltip("PhoneStream")
+        .tooltip("MirrorMind")
         .on_menu_event(|app, event| {
             match event.id.as_ref() {
                 "show" => show_main_window(app),

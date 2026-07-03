@@ -11,7 +11,7 @@ Shared TypeScript package containing types, constants, and interfaces used by bo
 
 | File | Description |
 |------|-------------|
-| `package.json` | Package definition; exports `@phone-stream/shared` |
+| `package.json` | Package definition; exports `@mirror-mind/shared` |
 | `src/index.ts` | Re-exports all types and constants |
 
 ## Subdirectories

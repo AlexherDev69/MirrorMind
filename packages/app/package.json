@@ -1,5 +1,5 @@
 {
-  "name": "@phone-stream/app",
+  "name": "@mirror-mind/app",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -15,7 +15,7 @@
     "lint": "eslint src/"
   },
   "dependencies": {
-    "@phone-stream/shared": "workspace:*",
+    "@mirror-mind/shared": "workspace:*",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "react": "^19.1.0",

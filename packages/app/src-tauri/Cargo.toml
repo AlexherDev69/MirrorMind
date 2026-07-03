@@ -1,12 +1,12 @@
 [package]
-name = "phone-stream"
+name = "mirror-mind"
 version = "0.1.0"
 description = "Stream your phone screen to Windows"
 authors = ["grimm"]
 edition = "2021"
 
 [lib]
-name = "phone_stream_lib"
+name = "mirror_mind_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

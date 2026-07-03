@@ -1,5 +1,5 @@
 {
-  "name": "@phone-stream/mcp-server",
+  "name": "@mirror-mind/mcp-server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "@phone-stream/shared": "workspace:*",
+    "@mirror-mind/shared": "workspace:*",
     "sharp": "^0.34.5",
     "tesseract.js": "^5.1.1",
     "zod": "^3.24.0"

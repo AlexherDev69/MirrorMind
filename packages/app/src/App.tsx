@@ -343,7 +343,7 @@ function App() {
       )}
 
       <header className={`flex items-center justify-between px-4 py-2 bg-zinc-900 border-b border-zinc-800 ${isMiniPlayer || isFullscreen ? "hidden" : ""}`}>
-        <h1 className="text-sm font-semibold text-zinc-200">PhoneStream</h1>
+        <h1 className="text-sm font-semibold text-zinc-200">MirrorMind</h1>
         <div className="flex items-center gap-1">
           {/* Capture group */}
           {appState === "streaming" && (
