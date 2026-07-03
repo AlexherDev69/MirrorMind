@@ -1,4 +1,4 @@
-import type { PhoneBrand } from "@phone-stream/shared";
+import type { PhoneBrand } from "@mirror-mind/shared";
 import type { BrandInstruction } from "./onboarding.types";
 
 export const BRAND_INSTRUCTIONS: Record<PhoneBrand, BrandInstruction> = {

@@ -20,7 +20,7 @@ importers:
 
   packages/app:
     dependencies:
-      '@phone-stream/shared':
+      '@mirror-mind/shared':
         specifier: workspace:*
         version: link:../shared
       '@tauri-apps/api':
@@ -69,12 +69,12 @@ importers:
 
   packages/mcp-server:
     dependencies:
+      '@mirror-mind/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.1
         version: 1.28.0(zod@3.25.76)
-      '@phone-stream/shared':
-        specifier: workspace:*
-        version: link:../shared
       sharp:
         specifier: ^0.34.5
         version: 0.34.5

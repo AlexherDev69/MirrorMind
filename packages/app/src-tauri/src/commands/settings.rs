@@ -200,7 +200,7 @@ pub async fn take_screenshot(app: AppHandle) -> Result<String, String> {
 
     // Save with timestamp filename
     let now = chrono::Local::now();
-    let filename = format!("PhoneStream_{}.png", now.format("%Y%m%d_%H%M%S"));
+    let filename = format!("MirrorMind_{}.png", now.format("%Y%m%d_%H%M%S"));
     let filepath = save_dir.join(&filename);
 
     std::fs::write(&filepath, &output.stdout)
@@ -246,7 +246,7 @@ pub async fn start_recording(app: AppHandle) -> Result<String, String> {
         .map_err(|e| format!("Cannot create recording directory: {}", e))?;
 
     let now = chrono::Local::now();
-    let filename = format!("PhoneStream_{}.h264", now.format("%Y%m%d_%H%M%S"));
+    let filename = format!("MirrorMind_{}.h264", now.format("%Y%m%d_%H%M%S"));
     let filepath = save_dir.join(&filename);
 
     let file = std::fs::File::create(&filepath)

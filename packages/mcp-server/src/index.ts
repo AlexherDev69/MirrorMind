@@ -2,7 +2,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { MCP_SERVER_NAME, MCP_SERVER_VERSION, DEFAULT_API_PORT } from "@phone-stream/shared";
+import { MCP_SERVER_NAME, MCP_SERVER_VERSION, DEFAULT_API_PORT } from "@mirror-mind/shared";
 import { TauriBridgeClient } from "./tauri-bridge/index.js";
 import { logger } from "./core/logger.js";
 import { registerScreenCaptureTool } from "./features/screen-capture/screen-capture.tool.js";
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
     const candidate = new TauriBridgeClient(token, p);
     try {
       const health = await candidate.health(2000);
-      logger.info(`Connected to PhoneStream app v${health.version} on port ${p}`);
+      logger.info(`Connected to MirrorMind app v${health.version} on port ${p}`);
       bridge = candidate;
       break;
     } catch {
@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   }
 
   if (!bridge) {
-    logger.warn("PhoneStream app is not running yet. Using default port, tools will fail until the app starts.");
+    logger.warn("MirrorMind app is not running yet. Using default port, tools will fail until the app starts.");
     bridge = new TauriBridgeClient(token, port);
   }
 

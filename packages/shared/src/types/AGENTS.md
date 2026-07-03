@@ -5,7 +5,7 @@
 
 ## Purpose
 
-TypeScript type definitions and interfaces used across the entire PhoneStream system. Includes device information types, API request/response schemas, and configuration types.
+TypeScript type definitions and interfaces used across the entire MirrorMind system. Includes device information types, API request/response schemas, and configuration types.
 
 ## For AI Agents
 

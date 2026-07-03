@@ -6,14 +6,14 @@
  */
 
 import path from "node:path";
-import { MCP_SERVER_NAME } from "@phone-stream/shared";
+import { MCP_SERVER_NAME } from "@mirror-mind/shared";
 
 function main(): void {
   const token = process.argv[2];
 
   if (!token) {
     console.log("\n  Usage: pnpm setup:mcp <token>\n");
-    console.log("  Get the token from the PhoneStream app header (click 'Token' button).\n");
+    console.log("  Get the token from the MirrorMind app header (click 'Token' button).\n");
     process.exit(1);
   }
 

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { PhoneBrand } from "@phone-stream/shared";
+import type { PhoneBrand } from "@mirror-mind/shared";
 
 const BRAND_MAP: Record<string, PhoneBrand> = {
   samsung: "samsung",
