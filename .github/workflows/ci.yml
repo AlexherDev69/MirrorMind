@@ -54,6 +54,13 @@ jobs:
         with:
           workspaces: packages/app/src-tauri
 
+      # The real MCP bundle is generated at build time (pnpm bundle:mcp) and is
+      # gitignored. cargo check only needs the resource path to exist, so create
+      # a placeholder — CI does not produce an installer.
+      - name: Stub MCP bundle resource
+        shell: bash
+        run: mkdir -p packages/app/src-tauri/mcp-bundle
+
       - name: Cargo check
         working-directory: packages/app/src-tauri
         run: cargo check
