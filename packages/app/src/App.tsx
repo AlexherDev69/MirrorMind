@@ -1,8 +1,10 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { VideoCanvas } from "./features/streaming/presentation/components/VideoCanvas";
+import { AudioControl } from "./features/streaming/presentation/components/AudioControl";
 import { DeviceStatus } from "./features/device-detection/presentation/components/DeviceStatus";
 import { McpStatus } from "./features/internal-api/presentation/components/McpStatus";
+import { CaptureConsentModal } from "./features/internal-api/presentation/components/CaptureConsentModal";
 import { OnboardingWizard } from "./features/onboarding/presentation/components/OnboardingWizard";
 import { SettingsToggle } from "./features/settings/presentation/components/SettingsToggle";
 import { CaptureButtons } from "./features/settings/presentation/components/CaptureButtons";
@@ -16,67 +18,33 @@ import { startLogcat, stopLogcat, clearLogcat } from "./features/logcat/data/log
 import { useDevicePolling, type AdbDevice, type AppState } from "./core/hooks/useDevicePolling";
 import { useStreamEvents } from "./core/hooks/useStreamEvents";
 import { useAudioStream } from "./core/hooks/useAudioStream";
-import { useAudioStore } from "./features/streaming/presentation/stores/audio.store";
+import { useStreamStarter } from "./core/hooks/useStreamStarter";
+import { useWifiSession } from "./core/hooks/useWifiSession";
+import { useWindowModes } from "./core/hooks/useWindowModes";
+import { useAppVersion } from "./core/hooks/useAppVersion";
+import { formatStreamError } from "./core/stream-error";
 import { useClipboardShortcut } from "./features/clipboard/presentation/useClipboardShortcut";
 import { WifiStatusBadge } from "./features/wifi-mode/presentation/components/WifiStatusBadge";
 import { WifiConnectModal } from "./features/wifi-mode/presentation/components/WifiConnectModal";
 import { WifiPairingModal } from "./features/wifi-mode/presentation/components/WifiPairingModal";
 import { WifiSecurityWarning } from "./features/wifi-mode/presentation/components/WifiSecurityWarning";
 import { isWifiSerial } from "./features/wifi-mode/presentation/wifi-serial";
-import { useWifiStore } from "./features/wifi-mode/presentation/stores/wifi.store";
-import {
-  connectWifiDevice,
-  disconnectWifiDevice,
-  enableTcpipAuto,
-  returnToUsb as returnToUsbApi,
-} from "./features/wifi-mode/data/wifi-api";
 import { showToast } from "./core/components/Toast";
-
-/** Convert technical error messages into user-friendly descriptions. */
-function formatStreamError(raw: string): string {
-  const lower = raw.toLowerCase();
-
-  if (lower.includes("port forwarding failed"))
-    return "Could not connect to the device. Try unplugging and re-plugging the USB cable.";
-  if (lower.includes("failed to push scrcpy"))
-    return "Could not install the screen mirror component on the phone. Check USB debugging is enabled.";
-  if (lower.includes("failed to connect to scrcpy"))
-    return "Connection to the phone timed out. Make sure the phone screen is unlocked and try again.";
-  if (lower.includes("failed to read device name") || lower.includes("failed to fill whole buffer"))
-    return "The phone did not respond in time. Unlock the screen and try again.";
-  if (lower.includes("failed to read codec"))
-    return "Could not start the video stream. Try reconnecting the phone.";
-  if (lower.includes("adb not found"))
-    return "ADB is not installed. Install Android SDK Platform Tools and restart the app.";
-  if (lower.includes("device not authorized") || lower.includes("unauthorized"))
-    return "The phone has not authorized this computer. Check for a permission popup on your phone.";
-
-  return raw.length > 120 ? `${raw.slice(0, 120)}...` : raw;
-}
 
 function App() {
   const [appState, setAppState] = useState<AppState>("no-device");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [device, setDevice] = useState<AdbDevice | null>(null);
   const [adbAvailable, setAdbAvailable] = useState<boolean | null>(null);
-  const [isMiniPlayer, setIsMiniPlayer] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [showMacros, setShowMacros] = useState(false);
   const [showWifiConnect, setShowWifiConnect] = useState(false);
   const [showWifiPair, setShowWifiPair] = useState(false);
   const appStateRef = useRef<AppState>("no-device");
-  const setWifiMode = useWifiStore((s) => s.setMode);
-  const loadKnownWifi = useWifiStore((s) => s.loadKnown);
-  const knownWifiDevices = useWifiStore((s) => s.knownDevices);
   const currentWifi = isWifiSerial(device?.serial ?? "");
-
-  // Keep the WiFi store's mode flag aligned with the active serial
-  useEffect(() => {
-    setWifiMode(currentWifi ? "wifi" : "usb");
-  }, [currentWifi, setWifiMode]);
-
-  // Note: tcpip is enabled inside startStream (before the stream opens) so the
-  // adbd restart it triggers cannot kill an active scrcpy connection.
+  const appVersion = useAppVersion();
+  const { isMiniPlayer, isFullscreen, toggleMiniPlayer, toggleFullscreen } = useWindowModes();
+  const { handleReturnToUsb } = useWifiSession(device, adbAvailable);
+  const startStream = useStreamStarter({ setAppState, setErrorMessage });
 
   useEffect(() => {
     appStateRef.current = appState;
@@ -89,152 +57,7 @@ function App() {
     invoke<string>("check_adb_available")
       .then(() => setAdbAvailable(true))
       .catch(() => setAdbAvailable(false));
-    loadKnownWifi();
-  }, [loadSettings, loadKnownWifi]);
-
-  // Try to reconnect known WiFi devices at startup
-  useEffect(() => {
-    if (adbAvailable !== true) return;
-    let cancelled = false;
-    (async () => {
-      let anyConnected = false;
-      for (const dev of knownWifiDevices) {
-        if (cancelled || !dev.lastIp) continue;
-        const host = dev.hostname ? `${dev.hostname}.local` : dev.lastIp;
-        try {
-          await connectWifiDevice(`${host}:5555`);
-          anyConnected = true;
-        } catch {
-          try {
-            await connectWifiDevice(`${dev.lastIp}:5555`);
-            anyConnected = true;
-          } catch {
-            /* unreachable — will fall through */
-          }
-        }
-      }
-      if (!cancelled && !anyConnected && knownWifiDevices.length > 0) {
-        showToast("Could not reconnect over WiFi. Plug the USB cable.", "info");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // Only run once per adb-availability flip; knownWifiDevices snapshot is fine.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adbAvailable]);
-
-  const handleReturnToUsb = useCallback(async () => {
-    if (!device) return;
-    const wifiAddress = device.serial;
-    // serial_usb is unknown once we're on a wifi serial; use scanned devices list
-    try {
-      const devices = await invoke<AdbDevice[]>("list_devices");
-      const usbDevice = devices.find(
-        (d) => d.state === "device" && !isWifiSerial(d.serial),
-      );
-      if (usbDevice) {
-        await returnToUsbApi(usbDevice.serial);
-      }
-      if (isWifiSerial(wifiAddress)) {
-        await disconnectWifiDevice(wifiAddress).catch(() => {});
-      }
-      showToast("Returned to USB mode. Plug the cable if needed.", "success");
-    } catch (err) {
-      showToast(`Return-to-USB failed: ${String(err)}`, "error");
-    }
-  }, [device]);
-
-  // Start stream with auto-retry
-  const startStream = useCallback(async (dev: AdbDevice) => {
-    const MAX_RETRIES = 3;
-    const RETRY_DELAYS = [0, 2000, 4000];
-    // adbd needs a moment to come back after `adb tcpip` restarts it.
-    const TCPIP_SETTLE_MS = 1500;
-
-    setAppState("connecting");
-    setErrorMessage(null);
-
-    // Enable WiFi tcpip BEFORE opening the stream (once per USB serial per
-    // session). `adb tcpip` restarts adbd, which would drop an active stream —
-    // doing it here means there is no stream yet to break.
-    if (!isWifiSerial(dev.serial)) {
-      const wifi = useWifiStore.getState();
-      if (!wifi.tcpipEnabledSerials.has(dev.serial)) {
-        try {
-          const info = await enableTcpipAuto(dev.serial);
-          wifi.markTcpipEnabled(dev.serial, info);
-          await wifi.rememberDevice(info);
-          await new Promise((r) => setTimeout(r, TCPIP_SETTLE_MS));
-        } catch {
-          // tcpip is best-effort; the stream can still run over USB.
-        }
-      }
-    }
-
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        setErrorMessage(`Connection failed. Retrying... (${attempt + 1}/${MAX_RETRIES})`);
-        await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt] ?? 4000));
-      }
-
-      try {
-        await invoke("push_scrcpy_server", { serial: dev.serial });
-        await invoke("start_stream", { serial: dev.serial });
-        return;
-      } catch (err) {
-        if (attempt === MAX_RETRIES - 1) {
-          setAppState("error");
-          setErrorMessage(formatStreamError(String(err)));
-        }
-      }
-    }
-  }, []);
-
-  const toggleMiniPlayer = useCallback(async () => {
-    try {
-      if (isMiniPlayer) {
-        await invoke("exit_mini_player");
-        setIsMiniPlayer(false);
-      } else {
-        await invoke("enter_mini_player");
-        setIsMiniPlayer(true);
-      }
-    } catch { /* ignore */ }
-  }, [isMiniPlayer]);
-
-  const toggleFullscreen = useCallback(async () => {
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const win = getCurrentWindow();
-      const current = await win.isFullscreen();
-      await win.setFullscreen(!current);
-      setIsFullscreen(!current);
-    } catch {
-      // Fallback: CSS-only
-      setIsFullscreen((prev) => !prev);
-    }
-  }, []);
-
-  // Global keyboard shortcuts
-  useEffect(() => {
-    const handleGlobalKeys = (e: KeyboardEvent) => {
-      if (document.querySelector("[data-modal]")) return;
-
-      if (e.key === "F11") {
-        e.preventDefault();
-        toggleFullscreen();
-      } else if (e.ctrlKey && e.shiftKey && e.key === "M") {
-        e.preventDefault();
-        toggleMiniPlayer();
-      } else if (e.ctrlKey && !e.shiftKey && e.key === "l") {
-        e.preventDefault();
-        useLogcatStore.getState().toggleOpen();
-      }
-    };
-    window.addEventListener("keydown", handleGlobalKeys);
-    return () => window.removeEventListener("keydown", handleGlobalKeys);
-  }, [toggleFullscreen, toggleMiniPlayer]);
+  }, [loadSettings]);
 
   const handleOnboardingComplete = useCallback(
     (dev: AdbDevice) => {
@@ -383,7 +206,7 @@ function App() {
           {/* Window group */}
           {appState === "streaming" && (
             <>
-              <MuteToggle />
+              <AudioControl />
               <MiniPlayerToggle isMini={isMiniPlayer} onToggle={() => toggleMiniPlayer()} />
               <FullscreenToggle onToggle={() => toggleFullscreen()} />
               <div className="w-px h-4 bg-zinc-700 mx-1" />
@@ -497,11 +320,12 @@ function App() {
           <WifiSecurityWarning onReturnToUsb={handleReturnToUsb} />
         </div>
       )}
+      <CaptureConsentModal />
       <ToastContainer />
 
       <footer className={`flex items-center justify-between px-4 py-1.5 bg-zinc-900 border-t border-zinc-800 text-xs text-zinc-500 ${isMiniPlayer || isFullscreen ? "hidden" : ""}`}>
         <span>{device ? `${device.model} (${device.serial})` : "No device"}</span>
-        <span>POC v0.1.0</span>
+        <span>{appVersion ? `v${appVersion}` : ""}</span>
       </footer>
     </div>
   );
@@ -549,40 +373,6 @@ function MacrosToggle({ onOpen }: { readonly onOpen: () => void }) {
       aria-label="Macros library"
     >
       <Icon name="macros" className="w-4 h-4 text-zinc-400 group-hover:text-zinc-200" />
-    </button>
-  );
-}
-
-/** Mute toggle button for the phone audio stream. */
-function MuteToggle() {
-  const audioMuted = useAudioStore((s) => s.audioMuted);
-  const audioAvailable = useAudioStore((s) => s.audioAvailable);
-  const toggleMute = useAudioStore((s) => s.toggleMute);
-
-  if (!audioAvailable) {
-    return (
-      <button
-        disabled
-        className="flex items-center justify-center w-7 h-7 rounded opacity-40 cursor-not-allowed"
-        title="Audio unavailable (Android < 11)"
-        aria-label="Audio unavailable"
-      >
-        <Icon name="volume-x" className="w-4 h-4 text-zinc-500" />
-      </button>
-    );
-  }
-
-  return (
-    <button
-      onClick={toggleMute}
-      className="flex items-center justify-center w-7 h-7 rounded hover:bg-zinc-800 transition-colors group"
-      title={audioMuted ? "Unmute phone audio" : "Mute phone audio"}
-      aria-label={audioMuted ? "Unmute" : "Mute"}
-    >
-      <Icon
-        name={audioMuted ? "volume-off" : "volume-up"}
-        className={`w-4 h-4 ${audioMuted ? "text-zinc-500" : "text-zinc-400 group-hover:text-zinc-200"}`}
-      />
     </button>
   );
 }

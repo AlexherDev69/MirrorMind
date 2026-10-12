@@ -13,6 +13,9 @@ interface SettingsStore {
   readonly streamSettingsChanged: boolean;
   load: () => Promise<void>;
   updateSettings: (partial: Partial<AppSettings>) => Promise<void>;
+  /** Changes the volume in memory only; call `persist` once the drag ends. */
+  setAudioVolume: (audioVolume: number) => void;
+  persist: () => Promise<void>;
   toggleAlwaysOnTop: () => Promise<void>;
   acknowledgeStreamChange: () => void;
 }
@@ -21,6 +24,7 @@ const STREAM_KEYS: ReadonlyArray<keyof AppSettings> = [
   "maxResolution",
   "bitrate",
   "maxFps",
+  "audioMode",
 ];
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
@@ -56,6 +60,18 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     } catch {
       // Revert on save failure
       set({ settings: current });
+    }
+  },
+
+  setAudioVolume: (audioVolume) => {
+    set({ settings: { ...get().settings, audioVolume } });
+  },
+
+  persist: async () => {
+    try {
+      await saveSettings(get().settings);
+    } catch {
+      // The in-memory value stays in use; the next successful save stores it.
     }
   },
 

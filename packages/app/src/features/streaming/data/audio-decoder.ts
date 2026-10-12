@@ -6,6 +6,10 @@ const logger = createLogger("AudioDecoder");
 const SAMPLE_RATE = 48_000;
 const CHANNELS = 2;
 const MAX_LAG_SECONDS = 0.1; // drop frames older than 100ms behind playback head
+// Upper bound on audio queued ahead of the playback head. Packets arrive in
+// bursts (notably the backlog captured while the sockets connect); queueing
+// them all back to back would turn that burst into permanent latency.
+const MAX_QUEUED_SECONDS = 0.08;
 
 interface AudioFramePayload {
   readonly pts: number;
@@ -26,8 +30,9 @@ export class AudioStreamDecoder {
   private nextStartTime = 0;
   private configured = false;
   private muted = false;
+  private volume = 1;
 
-  async start(): Promise<void> {
+  start(): void {
     if (this.context) return;
 
     this.context = new AudioContext({
@@ -35,7 +40,7 @@ export class AudioStreamDecoder {
       sampleRate: SAMPLE_RATE,
     });
     this.gainNode = this.context.createGain();
-    this.gainNode.gain.value = this.muted ? 0 : 1;
+    this.applyGain();
     this.gainNode.connect(this.context.destination);
 
     this.decoder = new AudioDecoder({
@@ -55,6 +60,14 @@ export class AudioStreamDecoder {
     } catch (error) {
       logger.error("Failed to configure audio decoder", error);
     }
+
+    // A context created outside a user gesture can start suspended. Not
+    // awaited: packets must not be dropped while the context resumes.
+    if (this.context.state === "suspended") {
+      this.context.resume().catch((error: unknown) => {
+        logger.error("Failed to resume audio context", error);
+      });
+    }
   }
 
   decodeFrame(payload: AudioFramePayload): void {
@@ -67,7 +80,10 @@ export class AudioStreamDecoder {
     const bytes = base64ToUint8Array(payload.dataBase64);
     try {
       const chunk = new EncodedAudioChunk({
-        type: payload.isKey ? "key" : "delta",
+        // scrcpy never sets the key flag on Opus packets, yet every Opus
+        // packet decodes on its own, and the decoder rejects delta chunks
+        // until it has seen a key one.
+        type: "key",
         timestamp: payload.pts,
         data: bytes,
       });
@@ -81,6 +97,11 @@ export class AudioStreamDecoder {
     const ctx = this.context;
     const gain = this.gainNode;
     if (!ctx || !gain) {
+      audioData.close();
+      return;
+    }
+
+    if (this.nextStartTime - ctx.currentTime > MAX_QUEUED_SECONDS) {
       audioData.close();
       return;
     }
@@ -112,8 +133,18 @@ export class AudioStreamDecoder {
 
   setMuted(muted: boolean): void {
     this.muted = muted;
+    this.applyGain();
+  }
+
+  /** Sets the playback volume, from 0 (silent) to 1 (full). */
+  setVolume(volume: number): void {
+    this.volume = Math.min(1, Math.max(0, volume));
+    this.applyGain();
+  }
+
+  private applyGain(): void {
     if (this.gainNode) {
-      this.gainNode.gain.value = muted ? 0 : 1;
+      this.gainNode.gain.value = this.muted ? 0 : this.volume;
     }
   }
 

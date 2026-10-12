@@ -1,3 +1,6 @@
+/** Where the phone audio is played while the stream runs. */
+export type AudioMode = "both" | "pc-only" | "phone-only";
+
 export interface AppSettings {
   readonly maxResolution: number;
   readonly bitrate: number;
@@ -5,6 +8,11 @@ export interface AppSettings {
   readonly alwaysOnTop: boolean;
   readonly minimizeToTray: boolean;
   readonly scrollSensitivity: number;
+  readonly audioMode: AudioMode;
+  /** Playback volume of the phone audio on the PC, in percent. */
+  readonly audioVolume: number;
+  /** Whether MCP clients may read the phone screen (screenshots, UI tree). */
+  readonly mcpCaptureAllowed: boolean;
   readonly screenshotPath: string;
   readonly recordingPath: string;
   readonly windowX: number | null;
@@ -20,6 +28,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   alwaysOnTop: true,
   minimizeToTray: true,
   scrollSensitivity: 10,
+  audioMode: "both",
+  audioVolume: 100,
+  mcpCaptureAllowed: false,
   screenshotPath: "", // loaded from Rust (Pictures/MirrorMind/Screen)
   recordingPath: "",  // loaded from Rust (Pictures/MirrorMind/Video)
   windowX: null,
@@ -27,6 +38,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   windowWidth: null,
   windowHeight: null,
 };
+
+export const AUDIO_VOLUME_MAX = 100;
 
 export const SCROLL_SENSITIVITY_MIN = 1;
 export const SCROLL_SENSITIVITY_MAX = 20;
@@ -43,6 +56,12 @@ export const BITRATE_OPTIONS = [
   { value: 4_000_000, label: "4 Mbps" },
   { value: 8_000_000, label: "8 Mbps (Default)" },
   { value: 16_000_000, label: "16 Mbps (High)" },
+] as const;
+
+export const AUDIO_MODE_OPTIONS = [
+  { value: "both", label: "Phone + PC" },
+  { value: "pc-only", label: "PC only" },
+  { value: "phone-only", label: "Phone only" },
 ] as const;
 
 export const FPS_OPTIONS = [

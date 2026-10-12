@@ -2,9 +2,14 @@ import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { AudioStreamDecoder } from "../../features/streaming/data/audio-decoder";
 import { useAudioStore } from "../../features/streaming/presentation/stores/audio.store";
+import { useSettingsStore } from "../../features/settings/presentation/stores/settings.store";
+import { AUDIO_VOLUME_MAX } from "../../features/settings/domain/settings.types";
 import { createLogger } from "../logger";
 
 const logger = createLogger("AudioStream");
+
+const currentVolume = (): number =>
+  useSettingsStore.getState().settings.audioVolume / AUDIO_VOLUME_MAX;
 
 interface AudioFrameEvent {
   readonly pts: number;
@@ -26,21 +31,22 @@ export function useAudioStream(): void {
   const decoderRef = useRef<AudioStreamDecoder | null>(null);
 
   useEffect(() => {
-    const unlistenInfo = listen<AudioInfoEvent>("audio-info", async (event) => {
+    const unlistenInfo = listen<AudioInfoEvent>("audio-info", (event) => {
       logger.info(`Audio stream started (codec=${event.payload.codec})`);
-      useAudioStore.getState().setAudioAvailable(true);
+      useAudioStore.getState().setAudioAvailable();
 
       if (!decoderRef.current) {
         const dec = new AudioStreamDecoder();
-        await dec.start();
         dec.setMuted(useAudioStore.getState().audioMuted);
+        dec.setVolume(currentVolume());
+        dec.start();
         decoderRef.current = dec;
       }
     });
 
     const unlistenUnavailable = listen<string>("audio-unavailable", (event) => {
       logger.warn(`Audio unavailable: ${event.payload}`);
-      useAudioStore.getState().setAudioAvailable(false);
+      useAudioStore.getState().setAudioUnavailable(event.payload);
     });
 
     const unlistenFrame = listen<AudioFrameEvent>("audio-frame", (event) => {
@@ -67,7 +73,12 @@ export function useAudioStream(): void {
       decoderRef.current?.setMuted(state.audioMuted);
     });
 
+    const unsubSettings = useSettingsStore.subscribe(() => {
+      decoderRef.current?.setVolume(currentVolume());
+    });
+
     return () => {
+      unsubSettings();
       unlistenInfo.then((fn) => fn());
       unlistenUnavailable.then((fn) => fn());
       unlistenFrame.then((fn) => fn());
