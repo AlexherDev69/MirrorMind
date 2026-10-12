@@ -102,27 +102,42 @@ const ALLOWED_URI_SCHEMES: &[&str] = &[
     "android.settings://",
 ];
 
+/// Characters refused in a deep link. The URI is single-quoted for the phone
+/// shell, so this is defence in depth: none of them belongs in a valid URI.
+const FORBIDDEN_URI_CHARS: [char; 9] = ['\'', '"', '`', '$', ';', '|', '<', '>', '\\'];
+
+/// Check that `uri` uses an allowed scheme and can only ever be one argument
+/// of `am start`. Whitespace is the important case: unquoted, it would let a
+/// caller append options such as `-n <component>`.
+fn validate_deep_link_uri(uri: &str) -> Result<(), String> {
+    let uri_lower = uri.to_lowercase();
+    if !ALLOWED_URI_SCHEMES.iter().any(|scheme| uri_lower.starts_with(scheme)) {
+        return Err(format!(
+            "Invalid URI scheme. Got: {}",
+            uri.chars().take(30).collect::<String>()
+        ));
+    }
+
+    let has_invalid_char = uri
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || FORBIDDEN_URI_CHARS.contains(&c));
+    if has_invalid_char {
+        return Err("URI contains invalid characters".to_string());
+    }
+    Ok(())
+}
+
 pub async fn deep_link_handler(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<DeepLinkPayload>,
 ) -> Result<impl IntoResponse, ApiError> {
     let serial = resolve_device_serial(&state, body.device_id).await?;
 
-    let uri_lower = body.uri.to_lowercase();
-    let has_valid_scheme = ALLOWED_URI_SCHEMES.iter().any(|s| uri_lower.starts_with(s));
-    if !has_valid_scheme {
-        return Err(ApiError(StatusCode::BAD_REQUEST, format!(
-            "Invalid URI scheme. Got: {}",
-            body.uri.chars().take(30).collect::<String>()
-        )));
-    }
+    validate_deep_link_uri(&body.uri).map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
 
-    if body.uri.chars().any(|c| matches!(c, ';' | '&' | '|' | '`' | '$' | '(' | ')' | '\n' | '\r')) {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "URI contains invalid characters".to_string()));
-    }
-
+    let quoted_uri = shell_single_quote(&body.uri);
     let output = crate::commands::process_utils::hidden_command("adb")
-        .args(["-s", &serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", &body.uri])
+        .args(["-s", &serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", &quoted_uri])
         .output()
         .map_err(|e| format!("adb am start failed: {}", e))?;
 
@@ -140,6 +155,7 @@ pub async fn ui_tree_handler(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<ScreenshotRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    ensure_capture_consent(&state)?;
     let serial = resolve_device_serial(&state, body.device_id).await?;
 
     let output = crate::commands::process_utils::hidden_command("adb")
@@ -171,4 +187,34 @@ pub async fn ui_tree_handler(
     }
 
     Ok(ok_json(xml.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_accept_uri_with_query_ampersand() {
+        assert!(validate_deep_link_uri("https://example.com/search?q=a&page=2").is_ok());
+    }
+
+    #[test]
+    fn should_reject_uri_when_it_contains_whitespace() {
+        assert!(validate_deep_link_uri("https://x -n com.app/.ExportedActivity").is_err());
+    }
+
+    #[test]
+    fn should_reject_uri_when_it_contains_redirection() {
+        assert!(validate_deep_link_uri("https://x>/sdcard/f").is_err());
+    }
+
+    #[test]
+    fn should_reject_uri_when_it_contains_single_quote() {
+        assert!(validate_deep_link_uri("https://x'y").is_err());
+    }
+
+    #[test]
+    fn should_reject_uri_when_scheme_is_not_allowed() {
+        assert!(validate_deep_link_uri("file:///sdcard/secret").is_err());
+    }
 }

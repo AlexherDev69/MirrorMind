@@ -28,6 +28,7 @@ pub async fn screenshot_handler(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<ScreenshotRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    ensure_capture_consent(&state)?;
     let serial = resolve_device_serial(&state, body.device_id).await?;
     let png_data = screenshot::capture_screenshot(&serial).map_err(ApiError::from)?;
     let (width, height) = screenshot::parse_png_dimensions(&png_data).map_err(ApiError::from)?;
