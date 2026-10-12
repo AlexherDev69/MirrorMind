@@ -62,6 +62,15 @@ fn save_window_geometry(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first: a second launch hands over to the running
+        // instance instead of competing for adb and the internal API port.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -156,7 +165,7 @@ pub fn run() {
                 .app_data_dir()
                 .expect("Failed to get app data dir");
             let token = auth::load_or_create_token(&app_data_dir);
-            eprintln!("[internal-api] Auth token loaded ({}...)", &token[..8]);
+            eprintln!("[internal-api] Auth token loaded");
 
             let projects = mcp_config::load_configured_projects(&app.handle());
             mcp_config::update_token_in_all_projects(&token, &projects);

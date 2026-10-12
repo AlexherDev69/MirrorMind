@@ -72,37 +72,6 @@ const API_PORT_START: u16 = 17395;
 const API_PORT_END: u16 = 17400;
 const API_HOST: &str = "127.0.0.1";
 
-/// On Windows, kill any process holding our preferred port to avoid stale sockets.
-fn kill_process_on_port(port: u16) {
-    #[cfg(target_os = "windows")]
-    {
-        let output = crate::commands::process_utils::hidden_command("netstat")
-            .args(["-ano"])
-            .output();
-
-        if let Ok(output) = output {
-            let text = String::from_utf8_lossy(&output.stdout);
-            let search = format!(":{}", port);
-
-            for line in text.lines() {
-                if line.contains(&search) && line.contains("LISTENING") {
-                    if let Some(pid_str) = line.split_whitespace().last() {
-                        if let Ok(pid) = pid_str.parse::<u32>() {
-                            // Don't kill ourselves
-                            if pid != std::process::id() {
-                                eprintln!("[internal-api] Killing stale process {} on port {}", pid, port);
-                                let _ = crate::commands::process_utils::hidden_command("taskkill")
-                                    .args(["/F", "/PID", &pid.to_string()])
-                                    .output();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Start the internal HTTP API server on 127.0.0.1:17395.
 /// This server exposes Tauri commands to the MCP server.
 /// Accepts a shutdown signal to gracefully close the server and release the port.
@@ -156,19 +125,14 @@ pub async fn start_internal_api(
         .layer(cors)
         .with_state(state);
 
-    // Kill any stale process occupying our preferred port
-    kill_process_on_port(API_PORT_START);
-
-    // Small delay to let the OS release the socket
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    // Try binding to ports in range with SO_REUSEADDR to reclaim stale sockets
+    // Take the first free port in the range. A port held by another program
+    // is skipped, never reclaimed: SO_REUSEADDR is deliberately not set, since
+    // on Windows it would let us bind on top of a live listener.
     let mut listener = None;
     let mut bound_port = 0u16;
     for port in API_PORT_START..=API_PORT_END {
         let addr: std::net::SocketAddr = format!("{}:{}", API_HOST, port).parse().unwrap();
         let socket = TcpSocket::new_v4().map_err(|e| e.to_string())?;
-        socket.set_reuseaddr(true).ok();
         if socket.bind(addr).is_err() {
             continue;
         }

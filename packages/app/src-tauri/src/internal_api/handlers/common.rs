@@ -2,9 +2,10 @@ use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::commands::adb;
+use crate::commands::settings::SettingsState;
 use crate::internal_api::auth::ApiState;
 
 // ── Response types ───────────────────────────────────────────────
@@ -55,7 +56,7 @@ pub async fn health_handler(
 ) -> impl IntoResponse {
     let uptime = state.start_time.elapsed().as_millis() as u64;
     ok_json(HealthData {
-        version: "0.1.0".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_ms: uptime,
     })
 }
@@ -116,55 +117,96 @@ fn parse_wxh(s: &str) -> Option<(u32, u32)> {
 
 // ── ADB command helpers ─────────────────────────────────────────
 
-pub fn adb_input_tap(serial: &str, x: f64, y: f64) -> Result<(), String> {
-    crate::commands::process_utils::hidden_command("adb")
-        .args(["-s", serial, "shell", "input", "tap", &(x.round() as i32).to_string(), &(y.round() as i32).to_string()])
+/// Quote `value` so the phone shell reads it as one literal argument.
+/// `adb shell` joins its arguments and hands them to a shell on the device,
+/// so anything left unquoted is re-parsed there.
+pub fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Run an adb command and fail when adb or the device reports an error, so
+/// callers never report success for an action that did not happen.
+fn run_adb(args: &[&str], action: &str) -> Result<(), String> {
+    let output = crate::commands::process_utils::hidden_command("adb")
+        .args(args)
         .output()
-        .map_err(|e| format!("adb input tap failed: {}", e))?;
+        .map_err(|e| format!("adb {} failed: {}", action, e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("adb {} failed: {}", action, stderr.trim()));
+    }
     Ok(())
 }
 
+pub fn adb_input_tap(serial: &str, x: f64, y: f64) -> Result<(), String> {
+    run_adb(
+        &["-s", serial, "shell", "input", "tap", &(x.round() as i32).to_string(), &(y.round() as i32).to_string()],
+        "input tap",
+    )
+}
+
 pub fn adb_input_swipe(serial: &str, sx: f64, sy: f64, ex: f64, ey: f64, duration: u32) -> Result<(), String> {
-    crate::commands::process_utils::hidden_command("adb")
-        .args([
+    run_adb(
+        &[
             "-s", serial, "shell", "input", "swipe",
             &(sx as i32).to_string(), &(sy as i32).to_string(),
             &(ex as i32).to_string(), &(ey as i32).to_string(),
             &duration.to_string(),
-        ])
-        .output()
-        .map_err(|e| format!("adb input swipe failed: {}", e))?;
-    Ok(())
+        ],
+        "input swipe",
+    )
+}
+
+/// Build the argument for `input text`: control characters cannot be typed
+/// and are dropped, spaces use the `%s` escape of the `input` tool, and the
+/// result is quoted so every other character reaches the phone unchanged.
+fn build_input_text_argument(text: &str) -> Option<String> {
+    let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+    if typed.is_empty() {
+        return None;
+    }
+    Some(shell_single_quote(&typed.replace(' ', "%s")))
 }
 
 pub fn adb_input_text(serial: &str, text: &str) -> Result<(), String> {
-    let mut escaped = String::with_capacity(text.len() * 2);
-    for c in text.chars() {
-        match c {
-            ' ' => escaped.push_str("%s"),
-            '\'' | '"' | '\\' | '`' | '$' | '(' | ')' | '!' | '&' | '|' | ';' | '<' | '>' | '{' | '}' | '[' | ']' | '*' | '?' | '#' | '~' | '\n' | '\r' | '\t' => {}
-            c if c.is_ascii_control() => {}
-            _ => escaped.push(c),
-        }
-    }
-
-    if escaped.is_empty() {
+    let Some(argument) = build_input_text_argument(text) else {
         return Ok(());
-    }
-
-    crate::commands::process_utils::hidden_command("adb")
-        .args(["-s", serial, "shell", "input", "text", &escaped])
-        .output()
-        .map_err(|e| format!("adb input text failed: {}", e))?;
-    Ok(())
+    };
+    run_adb(&["-s", serial, "shell", "input", "text", &argument], "input text")
 }
 
 pub fn adb_input_keyevent(serial: &str, keycode: i32) -> Result<(), String> {
-    crate::commands::process_utils::hidden_command("adb")
-        .args(["-s", serial, "shell", "input", "keyevent", &keycode.to_string()])
-        .output()
-        .map_err(|e| format!("adb input keyevent failed: {}", e))?;
-    Ok(())
+    run_adb(
+        &["-s", serial, "shell", "input", "keyevent", &keycode.to_string()],
+        "input keyevent",
+    )
+}
+
+// ── Screen capture consent ──────────────────────────────────────
+
+/// Event asking the UI to prompt the user for screen capture consent.
+const CAPTURE_CONSENT_EVENT: &str = "mcp-capture-consent-required";
+
+/// Screen content only leaves the app once the user allowed it, either in the
+/// settings or through the prompt raised by the first refused request.
+pub fn ensure_capture_consent(state: &ApiState) -> Result<(), ApiError> {
+    let allowed = state
+        .app_handle
+        .try_state::<SettingsState>()
+        .map(|settings| settings.0.lock().unwrap_or_else(|e| e.into_inner()).mcp_capture_allowed)
+        .unwrap_or(false);
+
+    if allowed {
+        return Ok(());
+    }
+
+    let _ = state.app_handle.emit(CAPTURE_CONSENT_EVENT, ());
+    Err(ApiError(
+        StatusCode::FORBIDDEN,
+        "Screen capture via MCP is not authorized yet. Approve it in the MirrorMind window, then retry."
+            .to_string(),
+    ))
 }
 
 // ── Scrcpy control socket helpers ───────────────────────────────
@@ -183,4 +225,34 @@ pub fn try_scrcpy_keycode(app: &tauri::AppHandle, keycode: i32) -> bool {
     let up = scrcpy::build_keycode_message(AKEY_EVENT_ACTION_UP, keycode, 0, 0);
     scrcpy::send_control_message(&stream_state, &down).is_ok()
         && scrcpy::send_control_message(&stream_state, &up).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_wrap_value_in_single_quotes_when_quoting_for_shell() {
+        assert_eq!(shell_single_quote("a b&c"), "'a b&c'");
+    }
+
+    #[test]
+    fn should_escape_single_quote_when_quoting_for_shell() {
+        assert_eq!(shell_single_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn should_keep_special_characters_when_building_input_text() {
+        assert_eq!(build_input_text_argument("a&b;c"), Some("'a&b;c'".to_string()));
+    }
+
+    #[test]
+    fn should_encode_spaces_when_building_input_text() {
+        assert_eq!(build_input_text_argument("hello world"), Some("'hello%sworld'".to_string()));
+    }
+
+    #[test]
+    fn should_return_none_when_text_has_only_control_characters() {
+        assert_eq!(build_input_text_argument("\n\t"), None);
+    }
 }

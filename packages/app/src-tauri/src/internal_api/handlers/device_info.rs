@@ -83,7 +83,7 @@ pub async fn stream_status_handler(
     if let Some(stream_state) = state.app_handle.try_state::<StreamState>() {
         let width = *stream_state.screen_width.lock().unwrap_or_else(|e| e.into_inner());
         let height = *stream_state.screen_height.lock().unwrap_or_else(|e| e.into_inner());
-        let is_streaming = !stream_state.stop_flag.load(std::sync::atomic::Ordering::Relaxed)
+        let is_streaming = !stream_state.stop_flag().load(std::sync::atomic::Ordering::Relaxed)
             && width > 0
             && height > 0;
 

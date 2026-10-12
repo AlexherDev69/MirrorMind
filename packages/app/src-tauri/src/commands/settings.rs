@@ -8,6 +8,34 @@ use super::process_utils::hidden_command;
 const SETTINGS_FILE: &str = "settings.json";
 const ONBOARDED_DEVICES_FILE: &str = "onboarded_devices.json";
 
+/// Where the phone audio is played while the stream runs.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AudioMode {
+    /// Keep the sound on the phone and also stream it to the PC.
+    Both,
+    /// Stream the sound to the PC only; the phone stays silent.
+    PcOnly,
+    /// Do not capture any audio; the phone keeps its sound.
+    PhoneOnly,
+}
+
+impl Default for AudioMode {
+    fn default() -> Self {
+        Self::Both
+    }
+}
+
+fn default_audio_mode() -> AudioMode {
+    AudioMode::default()
+}
+
+const DEFAULT_AUDIO_VOLUME: u32 = 100;
+
+fn default_audio_volume() -> u32 {
+    DEFAULT_AUDIO_VOLUME
+}
+
 /// Application settings, persisted to disk.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +46,17 @@ pub struct AppSettings {
     pub always_on_top: bool,
     pub minimize_to_tray: bool,
     pub scroll_sensitivity: f32,
+    /// Defaulted so a settings.json written before this field existed still
+    /// loads instead of resetting every other preference.
+    #[serde(default = "default_audio_mode")]
+    pub audio_mode: AudioMode,
+    /// Playback volume of the phone audio on the PC, in percent.
+    #[serde(default = "default_audio_volume")]
+    pub audio_volume: u32,
+    /// Whether MCP clients may read the phone screen (screenshots, UI tree).
+    /// Off until the user allows it.
+    #[serde(default)]
+    pub mcp_capture_allowed: bool,
     pub screenshot_path: String,
     pub recording_path: String,
     pub window_x: Option<i32>,
@@ -45,6 +84,9 @@ impl Default for AppSettings {
             always_on_top: true,
             minimize_to_tray: true,
             scroll_sensitivity: 10.0,
+            audio_mode: AudioMode::default(),
+            audio_volume: DEFAULT_AUDIO_VOLUME,
+            mcp_capture_allowed: false,
             screenshot_path: screenshot_dir.to_string_lossy().to_string(),
             recording_path: recording_dir.to_string_lossy().to_string(),
             window_x: None,
@@ -53,6 +95,20 @@ impl Default for AppSettings {
             window_height: None,
         }
     }
+}
+
+/// Serialises settings writes: saves can be requested concurrently and would
+/// otherwise fight over the same temporary file.
+static SETTINGS_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Replace `path` with `content` in one step. Writing in place could leave a
+/// truncated file behind, and an unreadable settings file resets every
+/// preference on the next launch.
+fn write_atomically(path: &std::path::Path, content: &str) -> Result<(), String> {
+    let _guard = SETTINGS_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_path = path.with_extension("json.tmp");
+    std::fs::write(&temp_path, content).map_err(|e| format!("Write error: {}", e))?;
+    std::fs::rename(&temp_path, path).map_err(|e| format!("Write error: {}", e))
 }
 
 /// Managed Tauri state holding the current settings.
@@ -93,8 +149,7 @@ fn save_settings_to_disk(app: &AppHandle, settings: &AppSettings) -> Result<(), 
     let path = get_settings_path(app)?;
     let content =
         serde_json::to_string_pretty(settings).map_err(|e| format!("Serialize error: {}", e))?;
-    std::fs::write(&path, &content).map_err(|e| format!("Write error: {}", e))?;
-    Ok(())
+    write_atomically(&path, &content)
 }
 
 #[tauri::command]
@@ -311,3 +366,45 @@ pub async fn stop_recording(app: AppHandle) -> Result<String, String> {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_keep_other_settings_when_audio_mode_is_missing_from_file() {
+        let mut json = serde_json::to_value(AppSettings::default()).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        fields.remove("audioMode");
+        fields.remove("audioVolume");
+        fields.remove("mcpCaptureAllowed");
+        fields.insert("bitrate".to_string(), serde_json::json!(4_000_000));
+
+        let loaded: AppSettings = serde_json::from_value(json).unwrap();
+
+        assert_eq!(loaded.bitrate, 4_000_000);
+        assert_eq!(loaded.audio_mode, AudioMode::Both);
+        assert_eq!(loaded.audio_volume, DEFAULT_AUDIO_VOLUME);
+        assert!(!loaded.mcp_capture_allowed);
+    }
+
+    #[test]
+    fn should_replace_existing_file_when_writing_atomically() {
+        let dir = std::env::temp_dir().join(format!("mirror-mind-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        write_atomically(&path, "first").unwrap();
+        write_atomically(&path, "second").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        assert!(!path.with_extension("json.tmp").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn should_serialize_audio_mode_as_kebab_case() {
+        let json = serde_json::to_string(&AudioMode::PcOnly).unwrap();
+        assert_eq!(json, "\"pc-only\"");
+    }
+}

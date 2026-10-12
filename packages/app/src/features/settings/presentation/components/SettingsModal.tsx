@@ -5,11 +5,13 @@ import {
   RESOLUTION_OPTIONS,
   BITRATE_OPTIONS,
   FPS_OPTIONS,
+  AUDIO_MODE_OPTIONS,
   SCROLL_SENSITIVITY_MIN,
   SCROLL_SENSITIVITY_MAX,
 } from "../../domain/settings.types";
 import { resetOnboarding } from "../../data/settings-persistence";
 import { Modal, Button } from "../../../../core/components";
+import { useAppVersion } from "../../../../core/hooks/useAppVersion";
 
 interface SettingsModalProps {
   readonly onClose: () => void;
@@ -18,6 +20,7 @@ interface SettingsModalProps {
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const { settings, updateSettings, toggleAlwaysOnTop, streamSettingsChanged, acknowledgeStreamChange } =
     useSettingsStore();
+  const appVersion = useAppVersion();
 
   const handleClose = useCallback(() => {
     acknowledgeStreamChange();
@@ -51,6 +54,15 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             options={FPS_OPTIONS}
             onChange={(v) => updateSettings({ maxFps: v })}
           />
+          <SelectField
+            label="Audio output"
+            value={settings.audioMode}
+            options={AUDIO_MODE_OPTIONS}
+            onChange={(v) => updateSettings({ audioMode: v })}
+          />
+          <p className="text-xs text-zinc-500">
+            Phone + PC needs Android 13 or newer; older phones keep the sound on the phone only.
+          </p>
           {streamSettingsChanged && (
             <p className="text-xs text-yellow-400 mt-2">
               Stream settings changed. Reconnect your phone to apply.
@@ -100,12 +112,22 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           />
         </Section>
 
+        {/* MCP */}
+        <Section title="MCP">
+          <ToggleField
+            label="Allow screen capture"
+            description="Let MCP clients read screenshots and on-screen text"
+            checked={settings.mcpCaptureAllowed}
+            onChange={() => updateSettings({ mcpCaptureAllowed: !settings.mcpCaptureAllowed })}
+          />
+        </Section>
+
         {/* Advanced */}
         <Section title="Advanced">
           <ResetOnboardingButton />
           <div className="flex items-center justify-between py-2">
             <span className="text-xs text-zinc-500">Version</span>
-            <span className="text-xs text-zinc-400">POC v0.1.0</span>
+            <span className="text-xs text-zinc-400">{appVersion ? `v${appVersion}` : ""}</span>
           </div>
         </Section>
       </div>
@@ -124,7 +146,7 @@ function Section({ title, children }: { readonly title: string; readonly childre
   );
 }
 
-function SelectField<T extends number>({
+function SelectField<T extends string | number>({
   label, value, options, onChange,
 }: {
   readonly label: string;
@@ -137,7 +159,10 @@ function SelectField<T extends number>({
       <span className="text-sm text-zinc-300">{label}</span>
       <select
         value={value}
-        onChange={(e) => onChange(Number(e.target.value) as T)}
+        onChange={(e) => {
+          const selected = options.find((opt) => String(opt.value) === e.target.value);
+          if (selected) onChange(selected.value);
+        }}
         className="text-xs px-3 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-zinc-300 focus:outline-none focus:border-purple-600"
       >
         {options.map((opt) => (

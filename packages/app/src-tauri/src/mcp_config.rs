@@ -212,7 +212,15 @@ fn write_mcp_config_file(
     let mut settings: serde_json::Value = if settings_path.exists() {
         let content = std::fs::read_to_string(settings_path)
             .map_err(|e| format!("Cannot read settings: {}", e))?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        // Never fall back to an empty object here: it would be written back
+        // and wipe every other MCP server declared in the file.
+        serde_json::from_str(&content).map_err(|e| {
+            format!(
+                "{} is not valid JSON and was left untouched: {}",
+                settings_path.display(),
+                e
+            )
+        })?
     } else {
         serde_json::json!({})
     };

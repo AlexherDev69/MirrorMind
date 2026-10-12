@@ -7,12 +7,16 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::process_utils::hidden_command;
+use super::settings::AudioMode;
 
 const SCRCPY_SERVER_PATH: &str = "/data/local/tmp/scrcpy-server.jar";
 const SCRCPY_VERSION: &str = "3.1";
 const LOCAL_PORT: u16 = 27183;
 const MAX_CONNECT_RETRIES: u32 = 20;
 const CONNECT_RETRY_DELAY_MS: u64 = 500;
+/// Minimum API level for `audio_source=playback`, the only source scrcpy can
+/// duplicate back to the phone speaker (Android 13).
+const ANDROID_13_SDK: u32 = 33;
 
 // scrcpy control message types
 const CONTROL_MSG_INJECT_KEYCODE: u8 = 0;
@@ -31,8 +35,18 @@ pub(crate) const AKEY_EVENT_ACTION_UP: u8 = 1;
 const AMOTION_EVENT_ACTION_DOWN: u8 = 0;
 const AMOTION_EVENT_ACTION_UP: u8 = 1;
 
+const MAX_VIDEO_PACKET_BYTES: usize = 10_000_000;
+const MAX_AUDIO_PACKET_BYTES: usize = 1_000_000;
+const MAX_CLIPBOARD_BYTES: usize = 1_000_000;
+const CLIPBOARD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+const DEVICE_MSG_TYPE_CLIPBOARD: u8 = 0;
+/// FourCC scrcpy sends on the audio socket when Opus capture started.
+const AUDIO_CODEC_OPUS: [u8; 4] = *b"opus";
+
 pub struct StreamState {
-    pub stop_flag: Arc<AtomicBool>,
+    /// Stop flag of the running session. Each session gets its own flag so the
+    /// reader threads of a superseded session can never be revived.
+    stop_flag: Mutex<Arc<AtomicBool>>,
     pub control_socket: Arc<Mutex<Option<TcpStream>>>,
     pub audio_socket: Arc<Mutex<Option<TcpStream>>>,
     pub screen_width: Arc<Mutex<u32>>,
@@ -85,9 +99,137 @@ fn get_server_jar_path(app: &AppHandle) -> Result<String, String> {
     Err("scrcpy-server.jar not found".to_string())
 }
 
+impl StreamState {
+    /// Stop flag of the session currently running.
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop_flag.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Stop the running session: raise its flag and close the sockets still
+    /// held here, which also makes the scrcpy server on the phone exit.
+    fn stop_session(&self) {
+        self.stop_flag().store(true, Ordering::Relaxed);
+        for socket in [&self.control_socket, &self.audio_socket] {
+            if let Some(stream) = socket.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+
+    /// Install a fresh stop flag for a new session and return it.
+    fn begin_session(&self) -> Arc<AtomicBool> {
+        let fresh = Arc::new(AtomicBool::new(false));
+        *self.stop_flag.lock().unwrap_or_else(|e| e.into_inner()) = fresh.clone();
+        fresh
+    }
+}
+
+/// Result of a read that also watches the session stop flag.
+enum ReadOutcome {
+    Filled,
+    Stopped,
+}
+
+/// Fill `buf` completely, resuming after read timeouts. `read_exact` drops
+/// the bytes it already consumed when it times out, which would desynchronise
+/// the packet stream.
+fn read_full(
+    stream: &mut TcpStream,
+    buf: &mut [u8],
+    stop_flag: &AtomicBool,
+) -> std::io::Result<ReadOutcome> {
+    use std::io::ErrorKind;
+
+    let mut filled = 0;
+    while filled < buf.len() {
+        if stop_flag.load(Ordering::Relaxed) {
+            return Ok(ReadOutcome::Stopped);
+        }
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) => return Err(ErrorKind::UnexpectedEof.into()),
+            Ok(read) => filled += read,
+            Err(ref e)
+                if matches!(
+                    e.kind(),
+                    ErrorKind::TimedOut | ErrorKind::WouldBlock | ErrorKind::Interrupted
+                ) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(ReadOutcome::Filled)
+}
+
+/// Emit `event` unless the session was stopped or superseded, so a dying
+/// session cannot disturb the one that replaced it.
+fn emit_if_running(app: &AppHandle, stop_flag: &AtomicBool, event: &str, payload: &str) {
+    if !stop_flag.load(Ordering::Relaxed) {
+        let _ = app.emit(event, payload);
+    }
+}
+
+/// scrcpy-server audio parameters for the selected mode.
+struct AudioSetup {
+    /// Parameters appended to the scrcpy-server command line.
+    args: String,
+    /// `None` when audio is streamed to the PC. Otherwise the reason sent to
+    /// the UI, and a signal that the server opens no audio socket at all.
+    disabled_reason: Option<&'static str>,
+}
+
+/// Read the device API level (`ro.build.version.sdk`).
+fn get_device_sdk(serial: &str) -> Option<u32> {
+    let output = hidden_command("adb")
+        .args(["-s", serial, "shell", "getprop", "ro.build.version.sdk"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// Build the audio parameters for `mode`.
+///
+/// `audio_source=output` routes the phone output through REMOTE_SUBMIX, which
+/// silences the phone speaker while capturing. Keeping the sound on the phone
+/// therefore means either capturing with `playback` + `audio_dup`
+/// (Android 13+) or not capturing at all.
+fn build_audio_setup(mode: AudioMode, device_sdk: Option<u32>) -> AudioSetup {
+    const COMMON: &str = "audio=true audio_codec=opus audio_bit_rate=128000 audio_buffer=5";
+
+    match mode {
+        AudioMode::PhoneOnly => AudioSetup {
+            args: "audio=false".to_string(),
+            disabled_reason: Some("phone-only"),
+        },
+        AudioMode::PcOnly => AudioSetup {
+            args: format!("{} audio_source=output", COMMON),
+            disabled_reason: None,
+        },
+        AudioMode::Both => {
+            if device_sdk.unwrap_or(0) >= ANDROID_13_SDK {
+                AudioSetup {
+                    args: format!("{} audio_source=playback audio_dup=true", COMMON),
+                    disabled_reason: None,
+                }
+            } else {
+                // Falling back to `output` would mute the phone, the opposite
+                // of what this mode promises, so skip capture instead.
+                AudioSetup {
+                    args: "audio=false".to_string(),
+                    disabled_reason: Some("requires-android-13"),
+                }
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> {
     super::adb::validate_serial(&serial)?;
+
+    // 0. Stop a session that is still running (e.g. USB to WiFi switch), so
+    // its server releases the socket name before the new one starts.
+    if let Some(state) = app.try_state::<StreamState>() {
+        state.stop_session();
+    }
 
     // 1. Remove any previous port forwarding
     let _ = hidden_command("adb")
@@ -108,14 +250,22 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
     }
 
     // 3. Read stream settings from managed state
-    let (max_size, bitrate, max_fps) = if let Some(settings_state) =
+    let (max_size, bitrate, max_fps, audio_mode) = if let Some(settings_state) =
         app.try_state::<super::settings::SettingsState>()
     {
         let s = settings_state.0.lock().unwrap_or_else(|e| e.into_inner());
-        (s.max_resolution, s.bitrate, s.max_fps)
+        (s.max_resolution, s.bitrate, s.max_fps, s.audio_mode)
     } else {
-        (0, 8_000_000, 60)
+        (0, 8_000_000, 60, AudioMode::default())
     };
+
+    // Only the duplicating mode depends on the Android version.
+    let device_sdk = match audio_mode {
+        AudioMode::Both => get_device_sdk(&serial),
+        AudioMode::PcOnly | AudioMode::PhoneOnly => None,
+    };
+    let audio_setup = build_audio_setup(audio_mode, device_sdk);
+    let audio_args = audio_setup.args.clone();
 
     // 4. Start scrcpy-server with control enabled
     let max_size_param = if max_size > 0 {
@@ -135,12 +285,9 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
                     "CLASSPATH={} app_process / com.genymobile.scrcpy.Server {} \
                      tunnel_forward=true \
                      video=true \
-                     audio=true \
-                     audio_codec=opus \
-                     audio_source=output \
-                     audio_bit_rate=128000 \
-                     audio_buffer=5 \
+                     {} \
                      control=true \
+                     clipboard_autosync=false \
                      send_device_meta=true \
                      send_frame_meta=true \
                      send_dummy_byte=true \
@@ -149,7 +296,12 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
                      video_bit_rate={} \
                      max_fps={} \
                      video_codec=h264",
-                    SCRCPY_SERVER_PATH, SCRCPY_VERSION, max_size_param, bitrate, max_fps
+                    SCRCPY_SERVER_PATH,
+                    SCRCPY_VERSION,
+                    audio_args,
+                    max_size_param,
+                    bitrate,
+                    max_fps
                 ),
             ])
             .output();
@@ -162,14 +314,14 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
     let (stop_flag, control_socket, audio_socket, screen_width, screen_height) =
         if let Some(state) = app.try_state::<StreamState>() {
             // Reuse existing state (reconnection)
-            state.stop_flag.store(false, Ordering::Relaxed);
+            let stop_flag = state.begin_session();
             *state.control_socket.lock().unwrap_or_else(|e| e.into_inner()) = None;
             *state.audio_socket.lock().unwrap_or_else(|e| e.into_inner()) = None;
             *state.screen_width.lock().unwrap_or_else(|e| e.into_inner()) = 0;
             *state.screen_height.lock().unwrap_or_else(|e| e.into_inner()) = 0;
             *state.recording_file.lock().unwrap_or_else(|e| e.into_inner()) = None;
             (
-                state.stop_flag.clone(),
+                stop_flag,
                 state.control_socket.clone(),
                 state.audio_socket.clone(),
                 state.screen_width.clone(),
@@ -184,7 +336,7 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
             let screen_height = Arc::new(Mutex::new(0u32));
 
             app.manage(StreamState {
-                stop_flag: stop_flag.clone(),
+                stop_flag: Mutex::new(stop_flag.clone()),
                 control_socket: control_socket.clone(),
                 audio_socket: audio_socket.clone(),
                 screen_width: screen_width.clone(),
@@ -202,6 +354,7 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
     let audio_socket_clone = audio_socket.clone();
     let screen_width_clone = screen_width.clone();
     let screen_height_clone = screen_height.clone();
+    let audio_disabled_reason = audio_setup.disabled_reason;
 
     std::thread::spawn(move || {
         match connect_and_stream(
@@ -209,6 +362,7 @@ pub async fn start_stream(app: AppHandle, serial: String) -> Result<(), String> 
             stop_flag_clone,
             control_socket_clone,
             audio_socket_clone,
+            audio_disabled_reason,
             screen_width_clone,
             screen_height_clone,
         ) {
@@ -229,6 +383,7 @@ fn connect_and_stream(
     stop_flag: Arc<AtomicBool>,
     control_socket: Arc<Mutex<Option<TcpStream>>>,
     audio_socket: Arc<Mutex<Option<TcpStream>>>,
+    audio_disabled_reason: Option<&'static str>,
     screen_width: Arc<Mutex<u32>>,
     screen_height: Arc<Mutex<u32>>,
 ) -> Result<(), String> {
@@ -262,14 +417,18 @@ fn connect_and_stream(
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| format!("Failed to set timeout: {}", e))?;
 
-    // Socket 2: Audio — connect after video dummy byte, before control
-    match TcpStream::connect(format!("127.0.0.1:{}", LOCAL_PORT)) {
-        Ok(audio_stream) => {
-            eprintln!("[scrcpy] Audio socket connected successfully");
-            *audio_socket.lock().unwrap_or_else(|e| e.into_inner()) = Some(audio_stream);
-        }
-        Err(e) => {
-            eprintln!("[scrcpy] Audio socket FAILED: {}", e);
+    // Socket 2: Audio — connect after video dummy byte, before control.
+    // With audio disabled the server accepts no audio socket, so connecting
+    // here would steal the control socket's slot.
+    if audio_disabled_reason.is_none() {
+        match TcpStream::connect(format!("127.0.0.1:{}", LOCAL_PORT)) {
+            Ok(audio_stream) => {
+                eprintln!("[scrcpy] Audio socket connected successfully");
+                *audio_socket.lock().unwrap_or_else(|e| e.into_inner()) = Some(audio_stream);
+            }
+            Err(e) => {
+                eprintln!("[scrcpy] Audio socket FAILED: {}", e);
+            }
         }
     }
 
@@ -285,7 +444,12 @@ fn connect_and_stream(
     }
 
     // Spawn audio reader thread (reads codec meta + audio frames)
-    spawn_audio_reader(app, audio_socket.clone(), stop_flag.clone());
+    match audio_disabled_reason {
+        None => spawn_audio_reader(app, audio_socket.clone(), stop_flag.clone()),
+        Some(reason) => {
+            let _ = app.emit("audio-unavailable", reason);
+        }
+    }
 
     // Now read device metadata: 64 bytes device name
     let mut device_name_buf = [0u8; 64];
@@ -321,14 +485,13 @@ fn connect_and_stream(
     let mut header_buf = [0u8; 12];
     let encoder = base64::engine::general_purpose::STANDARD;
 
-    while !stop_flag.load(Ordering::Relaxed) {
-        match video_stream.read_exact(&mut header_buf) {
-            Ok(()) => {}
-            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+    loop {
+        match read_full(&mut video_stream, &mut header_buf, &stop_flag) {
+            Ok(ReadOutcome::Filled) => {}
+            Ok(ReadOutcome::Stopped) => return Ok(()),
             Err(_) => {
                 // Stream broken = device disconnected
-                let _ = app.emit("stream-status", "disconnected");
+                emit_if_running(app, &stop_flag, "stream-status", "disconnected");
                 return Ok(());
             }
         }
@@ -339,15 +502,21 @@ fn connect_and_stream(
         let pts = pts_and_flags & 0x3FFF_FFFF_FFFF_FFFF;
         let size = u32::from_be_bytes(header_buf[8..12].try_into().unwrap()) as usize;
 
-        if size == 0 || size > 10_000_000 {
+        if size == 0 {
             continue;
+        }
+        if size > MAX_VIDEO_PACKET_BYTES {
+            // The header is garbage: the stream cannot be resynchronised.
+            emit_if_running(app, &stop_flag, "stream-status", "disconnected");
+            return Ok(());
         }
 
         let mut frame_data = vec![0u8; size];
-        match video_stream.read_exact(&mut frame_data) {
-            Ok(()) => {}
+        match read_full(&mut video_stream, &mut frame_data, &stop_flag) {
+            Ok(ReadOutcome::Filled) => {}
+            Ok(ReadOutcome::Stopped) => return Ok(()),
             Err(_) => {
-                let _ = app.emit("stream-status", "disconnected");
+                emit_if_running(app, &stop_flag, "stream-status", "disconnected");
                 return Ok(());
             }
         }
@@ -375,8 +544,6 @@ fn connect_and_stream(
             }),
         );
     }
-
-    Ok(())
 }
 
 /// Take ownership of the audio socket and spawn a background reader thread.
@@ -404,17 +571,21 @@ fn spawn_audio_reader(
             return;
         }
 
-        // Read 4-byte codec meta (FourCC). 0x00000000 means audio is disabled (Android < 11).
+        // Read 4-byte codec meta (FourCC). scrcpy sends 0 when audio is
+        // disabled (Android < 11) and 1 when the capture failed.
         let mut codec_id_buf = [0u8; 4];
-        if stream.read_exact(&mut codec_id_buf).is_err() {
+        if !matches!(
+            read_full(&mut stream, &mut codec_id_buf, &stop_flag),
+            Ok(ReadOutcome::Filled)
+        ) {
             eprintln!("[scrcpy-audio] Failed to read codec meta");
-            let _ = app.emit("audio-unavailable", "codec-meta-read-failed");
+            emit_if_running(&app, &stop_flag, "audio-unavailable", "capture-failed");
             return;
         }
 
-        if codec_id_buf == [0, 0, 0, 0] {
-            eprintln!("[scrcpy-audio] Audio not available on this device (Android < 11)");
-            let _ = app.emit("audio-unavailable", "device-unsupported");
+        if codec_id_buf != AUDIO_CODEC_OPUS {
+            eprintln!("[scrcpy-audio] Audio capture not started (meta {:?})", codec_id_buf);
+            emit_if_running(&app, &stop_flag, "audio-unavailable", "capture-failed");
             return;
         }
 
@@ -433,13 +604,12 @@ fn read_audio_frames(app: &AppHandle, stream: &mut TcpStream, stop_flag: &Arc<At
     let mut header_buf = [0u8; 12];
     let encoder = base64::engine::general_purpose::STANDARD;
 
-    while !stop_flag.load(Ordering::Relaxed) {
-        match stream.read_exact(&mut header_buf) {
-            Ok(()) => {}
-            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+    loop {
+        match read_full(stream, &mut header_buf, stop_flag) {
+            Ok(ReadOutcome::Filled) => {}
+            Ok(ReadOutcome::Stopped) => return,
             Err(_) => {
-                let _ = app.emit("audio-status", "stopped");
+                emit_if_running(app, stop_flag, "audio-status", "stopped");
                 return;
             }
         }
@@ -450,14 +620,23 @@ fn read_audio_frames(app: &AppHandle, stream: &mut TcpStream, stop_flag: &Arc<At
         let pts = pts_and_flags & 0x3FFF_FFFF_FFFF_FFFF;
         let size = u32::from_be_bytes(header_buf[8..12].try_into().unwrap()) as usize;
 
-        if size == 0 || size > 1_000_000 {
+        if size == 0 {
             continue;
+        }
+        if size > MAX_AUDIO_PACKET_BYTES {
+            // The header is garbage: the stream cannot be resynchronised.
+            emit_if_running(app, stop_flag, "audio-status", "stopped");
+            return;
         }
 
         let mut data = vec![0u8; size];
-        if stream.read_exact(&mut data).is_err() {
-            let _ = app.emit("audio-status", "stopped");
-            return;
+        match read_full(stream, &mut data, stop_flag) {
+            Ok(ReadOutcome::Filled) => {}
+            Ok(ReadOutcome::Stopped) => return,
+            Err(_) => {
+                emit_if_running(app, stop_flag, "audio-status", "stopped");
+                return;
+            }
         }
 
         let b64 = encoder.encode(&data);
@@ -772,58 +951,73 @@ pub async fn get_phone_clipboard(app: AppHandle) -> Result<String, String> {
     let mut guard = state.control_socket.lock().unwrap_or_else(|e| e.into_inner());
     let socket = guard.as_mut().ok_or("Control socket not connected")?;
 
+    // The server is started with clipboard_autosync=false, so the only device
+    // message expected here is the answer to this request. Still discard
+    // leftovers (an answer that arrived after an earlier call timed out).
+    drain_pending(socket);
+
     // Send GET_CLIPBOARD message: type(1) + copy_key(1) = 2 bytes
     // copy_key: 0 = COPY_KEY_NONE (just get, don't trigger copy)
-    let msg = vec![CONTROL_MSG_GET_CLIPBOARD, 0u8];
+    let msg = [CONTROL_MSG_GET_CLIPBOARD, 0u8];
     socket.write_all(&msg).map_err(|e| format!("Failed to send GET_CLIPBOARD: {}", e))?;
     socket.flush().map_err(|e| format!("Failed to flush: {}", e))?;
 
-    // Read device response: type(1) + clipboard_length(4) + clipboard_text(N)
-    // Set a short read timeout to avoid blocking forever
-    socket.set_read_timeout(Some(Duration::from_secs(2)))
+    socket
+        .set_read_timeout(Some(CLIPBOARD_RESPONSE_TIMEOUT))
         .map_err(|e| format!("Failed to set timeout: {}", e))?;
+    let response = read_clipboard_response(socket);
+    socket.set_read_timeout(None).ok();
 
+    if response.is_err() {
+        // A half-read message would corrupt the next request.
+        drain_pending(socket);
+    }
+    response
+}
+
+/// Discard every byte currently readable on `socket` without blocking.
+fn drain_pending(socket: &mut TcpStream) {
+    if socket.set_nonblocking(true).is_err() {
+        return;
+    }
+    let mut scratch = [0u8; 4096];
+    while matches!(socket.read(&mut scratch), Ok(read) if read > 0) {}
+    let _ = socket.set_nonblocking(false);
+}
+
+/// Read one scrcpy device message and return its clipboard text.
+/// Layout: type(1) + clipboard_length(4, big-endian) + clipboard_text(N).
+fn read_clipboard_response(socket: &mut TcpStream) -> Result<String, String> {
     let mut type_buf = [0u8; 1];
-    socket.read_exact(&mut type_buf)
+    socket
+        .read_exact(&mut type_buf)
         .map_err(|_| "No clipboard response from device".to_string())?;
-
-    // Device message type 0 = CLIPBOARD
-    if type_buf[0] != 0 {
+    if type_buf[0] != DEVICE_MSG_TYPE_CLIPBOARD {
         return Err(format!("Unexpected device message type: {}", type_buf[0]));
     }
 
     let mut len_buf = [0u8; 4];
-    socket.read_exact(&mut len_buf)
+    socket
+        .read_exact(&mut len_buf)
         .map_err(|e| format!("Failed to read clipboard length: {}", e))?;
-    let text_len = i32::from_be_bytes(len_buf) as usize;
-
-    if text_len == 0 || text_len > 1_000_000 {
-        return Ok(String::new());
-    }
+    let text_len = usize::try_from(i32::from_be_bytes(len_buf))
+        .ok()
+        .filter(|len| *len <= MAX_CLIPBOARD_BYTES)
+        .ok_or("Invalid clipboard length from device")?;
 
     let mut text_buf = vec![0u8; text_len];
-    socket.read_exact(&mut text_buf)
+    socket
+        .read_exact(&mut text_buf)
         .map_err(|e| format!("Failed to read clipboard text: {}", e))?;
 
-    // Reset timeout
-    socket.set_read_timeout(None).ok();
-
-    String::from_utf8(text_buf)
-        .map_err(|e| format!("Invalid clipboard UTF-8: {}", e))
+    String::from_utf8(text_buf).map_err(|e| format!("Invalid clipboard UTF-8: {}", e))
 }
 
 #[tauri::command]
 pub async fn stop_stream(app: AppHandle, serial: String) -> Result<(), String> {
     super::adb::validate_serial(&serial)?;
     if let Some(state) = app.try_state::<StreamState>() {
-        state.stop_flag.store(true, Ordering::Relaxed);
-        // Shutdown audio socket if still held in state (reader thread owns it once started)
-        if let Ok(mut guard) = state.audio_socket.lock() {
-            if let Some(ref s) = *guard {
-                let _ = s.shutdown(std::net::Shutdown::Both);
-            }
-            *guard = None;
-        }
+        state.stop_session();
     }
 
     let _ = hidden_command("adb")
@@ -838,6 +1032,42 @@ pub async fn stop_stream(app: AppHandle, serial: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_duplicate_audio_when_both_mode_on_android_13() {
+        let setup = build_audio_setup(AudioMode::Both, Some(ANDROID_13_SDK));
+        assert!(setup.args.contains("audio_source=playback"));
+        assert!(setup.args.contains("audio_dup=true"));
+        assert_eq!(setup.disabled_reason, None);
+    }
+
+    #[test]
+    fn should_skip_capture_when_both_mode_on_older_android() {
+        let setup = build_audio_setup(AudioMode::Both, Some(ANDROID_13_SDK - 1));
+        assert_eq!(setup.args, "audio=false");
+        assert_eq!(setup.disabled_reason, Some("requires-android-13"));
+    }
+
+    #[test]
+    fn should_skip_capture_when_both_mode_and_sdk_unknown() {
+        let setup = build_audio_setup(AudioMode::Both, None);
+        assert_eq!(setup.args, "audio=false");
+    }
+
+    #[test]
+    fn should_capture_device_output_when_pc_only_mode() {
+        let setup = build_audio_setup(AudioMode::PcOnly, None);
+        assert!(setup.args.contains("audio_source=output"));
+        assert!(!setup.args.contains("audio_dup"));
+        assert_eq!(setup.disabled_reason, None);
+    }
+
+    #[test]
+    fn should_disable_audio_when_phone_only_mode() {
+        let setup = build_audio_setup(AudioMode::PhoneOnly, Some(ANDROID_13_SDK));
+        assert_eq!(setup.args, "audio=false");
+        assert_eq!(setup.disabled_reason, Some("phone-only"));
+    }
 
     #[test]
     fn test_build_touch_message_size() {
@@ -985,5 +1215,79 @@ mod tests {
     fn test_build_set_clipboard_no_paste() {
         let msg = build_set_clipboard_message("x", false);
         assert_eq!(msg[9], 0); // paste = false
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    fn connected_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    #[test]
+    fn should_keep_partial_bytes_when_read_times_out_mid_packet() {
+        let (mut reader, mut writer) = connected_pair();
+        reader.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        let stop_flag = AtomicBool::new(false);
+
+        let sender = std::thread::spawn(move || {
+            writer.write_all(&[1, 2]).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            writer.write_all(&[3, 4]).unwrap();
+        });
+
+        let mut buf = [0u8; 4];
+        let outcome = read_full(&mut reader, &mut buf, &stop_flag).unwrap();
+        sender.join().unwrap();
+
+        assert!(matches!(outcome, ReadOutcome::Filled));
+        assert_eq!(buf, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn should_stop_reading_when_session_is_stopped() {
+        let (mut reader, _writer) = connected_pair();
+        reader.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        let stop_flag = AtomicBool::new(true);
+
+        let mut buf = [0u8; 4];
+        let outcome = read_full(&mut reader, &mut buf, &stop_flag).unwrap();
+
+        assert!(matches!(outcome, ReadOutcome::Stopped));
+    }
+
+    #[test]
+    fn should_fail_when_peer_closes_the_connection() {
+        let (mut reader, writer) = connected_pair();
+        drop(writer);
+        let stop_flag = AtomicBool::new(false);
+
+        let mut buf = [0u8; 4];
+        assert!(read_full(&mut reader, &mut buf, &stop_flag).is_err());
+    }
+
+    #[test]
+    fn should_give_each_session_its_own_stop_flag() {
+        let state = StreamState {
+            stop_flag: Mutex::new(Arc::new(AtomicBool::new(false))),
+            control_socket: Arc::new(Mutex::new(None)),
+            audio_socket: Arc::new(Mutex::new(None)),
+            screen_width: Arc::new(Mutex::new(0)),
+            screen_height: Arc::new(Mutex::new(0)),
+            recording_file: Arc::new(Mutex::new(None)),
+        };
+        let first_session = state.stop_flag();
+
+        state.stop_session();
+        let second_session = state.begin_session();
+
+        assert!(first_session.load(Ordering::Relaxed));
+        assert!(!second_session.load(Ordering::Relaxed));
     }
 }
